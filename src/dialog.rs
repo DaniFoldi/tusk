@@ -15,7 +15,7 @@ use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{TuskHandle, short_version};
+use crate::app::TuskHandle;
 use crate::conn::ConnectionForm;
 use crate::db::{self, SslMode};
 
@@ -337,7 +337,9 @@ impl ConnDialog {
             let what = match conn.engine.form() {
                 Form::File => "Fill in the name and the database file.",
                 Form::UrlToken => "Fill in the name and the server URL.",
-                Form::CloudflareD1 => "Fill in the name, account id and database id.",
+                Form::CloudflareD1 => {
+                    "Fill in the name and the account id (the database is optional)."
+                }
                 Form::Snowflake => "Fill in the name, account and user.",
                 Form::BigQuery => "Fill in the name and the project.",
                 Form::DynamoDb => "Fill in the name and the region (or an endpoint).",
@@ -363,7 +365,7 @@ impl ConnDialog {
             let _ = weak.update(cx, |this: &mut ConnDialog, cx| {
                 this.form.busy = false;
                 this.form.notice = Some(match result {
-                    Ok(v) => (true, format!("OK — {}", short_version(&v))),
+                    Ok(v) => (true, v.summary()),
                     Err(e) => (false, e),
                 });
                 cx.notify();
@@ -511,7 +513,7 @@ impl ConnDialog {
                                 }
                                 Err(e) => app.toast(false, e),
                             }
-                            app.connected_with(c, &conn, &password, cx);
+                            app.connected_with(c, &password, cx);
                         });
                         cx.notify();
                         let _ = cx.update_window(dialog_window, |_, window, _| {
@@ -770,7 +772,7 @@ impl ConnDialog {
                 rows.extend(opt_row("Account ID", "account_id"));
                 rows.push(
                     line(vec![
-                        label("Database ID").into_any_element(),
+                        label("Database").into_any_element(),
                         grow(Input::new(&self.form.database).into_any_element()),
                     ])
                     .into_any_element(),

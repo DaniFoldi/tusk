@@ -1629,6 +1629,10 @@ pub struct Connected {
     /// end for SSH profiles) — what the language server must connect to.
     pub host: String,
     pub port: u16,
+    /// The profile as connected: `database` carries the effective default
+    /// when the saved one was blank, so callers show / remember what the
+    /// pool is really on.
+    pub conn: SavedConnection,
 }
 
 /// Open a profile: SSH tunnel first when configured, then the pool.
@@ -1678,17 +1682,41 @@ pub async fn connect(
         tunnel,
         host,
         port,
+        conn,
     })
 }
 
-/// "Test connection": the same path as [`connect`], then `SELECT version()`.
+/// "Test connection": the same path as [`connect`], then `SELECT version()`
+/// and the databases available under the connection — the dialog shows
+/// both, and an account-level D1 profile's test *is* its database listing.
+#[derive(Clone, Debug)]
+pub struct Tested {
+    pub version: String,
+    pub databases: Vec<String>,
+}
+
+impl Tested {
+    /// The notice both test buttons show: the version, plus how many
+    /// databases the connection offers (the account listing for D1, the
+    /// server's list for Postgres; nothing when there's just one).
+    pub fn summary(&self) -> String {
+        let v = crate::app::short_version(&self.version);
+        if self.databases.len() > 1 {
+            format!("OK — {v} · {} databases", self.databases.len())
+        } else {
+            format!("OK — {v}")
+        }
+    }
+}
+
 pub async fn test_connect(
     conn: SavedConnection,
     password: String,
     ssh_secret: Option<String>,
-) -> DbResult<String> {
+) -> DbResult<Tested> {
     let c = connect(conn, password, ssh_secret).await?;
     let version = c.pool.driver().version().await?;
+    let databases = fetch_databases(&c.pool).await.unwrap_or_default();
     if let Some(pool) = c.pool.pg().cloned() {
         let _ = run_db(async move {
             pool.close().await;
@@ -1697,7 +1725,7 @@ pub async fn test_connect(
         .await;
     }
     drop(c);
-    Ok(version)
+    Ok(Tested { version, databases })
 }
 
 // ---- engine-neutral API (the workspace calls these with a `Db`) ----
@@ -1991,7 +2019,16 @@ mod tests {
             .handle()
             .block_on(test_connect(dev_default(), "tusk".into(), None))
             .expect("docker PG reachable");
-        assert!(v.contains("PostgreSQL"), "unexpected version: {v}");
+        assert!(
+            v.version.contains("PostgreSQL"),
+            "unexpected version: {}",
+            v.version
+        );
+        assert!(
+            v.databases.contains(&"tusk_dev".to_string()),
+            "expected tusk_dev among the databases: {:?}",
+            v.databases
+        );
     }
 
     #[test]
@@ -2244,7 +2281,7 @@ mod tests {
                 Some("sshpass".into()),
             ))
             .expect("postgres through the ssh tunnel");
-        assert!(v.contains("PostgreSQL"), "{v}");
+        assert!(v.version.contains("PostgreSQL"), "{}", v.version);
         // Wrong SSH password → a real SSH auth error, not a hang.
         let err = RUNTIME
             .handle()

@@ -475,14 +475,41 @@ impl TuskApp {
         };
         let current_db = self.current_database();
         let dbs = self.databases.clone();
+        // Long lists: the dropdown shows the recent ones (the current
+        // database first) and a search entry — ⌘K opens the searchable
+        // palette. Short lists just show everything.
+        let mut recent: Vec<String> = crate::settings::recent_databases(&self.active_name)
+            .into_iter()
+            .filter(|d| dbs.contains(d))
+            .take(10)
+            .collect();
+        if !current_db.is_empty() && !recent.contains(&current_db) {
+            recent.insert(0, current_db.clone());
+        }
+        recent.truncate(10);
+        let long = dbs.len() > 10;
         let db_menu = crumb(
             "title-db",
             include_bytes!("../assets/icons/ui/database.svg"),
-            current_db.clone(),
+            if current_db.is_empty() {
+                "Select database".to_string()
+            } else {
+                current_db.clone()
+            },
         )
         .dropdown_menu(move |menu, _, _| {
             let mut menu = menu.max_h(px(360.)).scrollable(true);
-            for name in &dbs {
+            if long {
+                menu = menu
+                    .item(
+                        PopupMenuItem::new("Search Databases…").on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(OpenDatabase), cx);
+                        }),
+                    )
+                    .separator();
+            }
+            let list: &Vec<String> = if long { &recent } else { &dbs };
+            for name in list {
                 let go = name.clone();
                 menu = menu.item(
                     PopupMenuItem::new(name.clone())
@@ -598,24 +625,27 @@ impl TuskApp {
                     }))
             });
 
+        // One picker where a database and a schema are the same thing.
+        let single_crumb = self
+            .pool
+            .as_ref()
+            .is_some_and(|p| p.engine().databases_are_schemas());
+        // On two-level engines, a lone schema ("main" on D1, a db with only
+        // "public") doesn't get a crumb.
+        let show_schema = single_crumb || self.schemas.len() > 1;
         TitleBar::new()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_0p5()
-                    // One picker where a database and a schema are the same thing.
-                    .when(
-                        !self
-                            .pool
-                            .as_ref()
-                            .is_some_and(|p| p.engine().databases_are_schemas()),
-                        |d| {
-                            d.child(db_menu)
-                                .child(div().text_color(muted.opacity(0.5)).child("/"))
-                        },
-                    )
-                    .child(schema_menu),
+                    .when(!single_crumb, |d| d.child(db_menu))
+                    .when(show_schema, |d| {
+                        d.when(!single_crumb, |d| {
+                            d.child(div().text_color(muted.opacity(0.5)).child("/"))
+                        })
+                        .child(schema_menu)
+                    }),
             )
             .child(
                 div()
@@ -874,7 +904,7 @@ impl TuskApp {
             let _ = weak.update(cx, |this: &mut TuskApp, cx| {
                 this.form.busy = false;
                 this.form.notice = Some(match result {
-                    Ok(v) => (true, format!("OK — {}", short_version(&v))),
+                    Ok(v) => (true, v.summary()),
                     Err(e) => (false, e),
                 });
                 cx.notify();
@@ -943,7 +973,7 @@ impl TuskApp {
             let _ = weak.update(cx, |this: &mut TuskApp, cx| {
                 this.form.busy = false;
                 match result {
-                    Ok(c) => this.connected_with(c, &conn, &password, cx),
+                    Ok(c) => this.connected_with(c, &password, cx),
                     Err(e) => {
                         // Outside the dialog (welcome list, ⌘1…) only a toast is
                         // seen: render turns the error notice into one.
@@ -2336,13 +2366,16 @@ impl TuskApp {
     }
 
     /// Called by the connection dialog on success: install the pool and enter.
+    /// The profile comes from `Connected`: `connect` fills a blank database
+    /// with the engine default (or the picked D1 one), and the crumb,
+    /// "last used" and the recent list must read the filled value.
     pub fn connected_with(
         &mut self,
         connected: db::Connected,
-        conn: &SavedConnection,
         password: &str,
         cx: &mut Context<Self>,
     ) {
+        let conn = connected.conn.clone();
         let name = conn.name.clone();
         self.clear_conn_search = true;
         self.active_conn_folded = false;
@@ -2361,18 +2394,24 @@ impl TuskApp {
             tunnel,
             host: reach_host,
             port: reach_port,
+            ..
         } = connected;
         self.tunnel = tunnel;
         db::set_engine(pool.engine());
-        db::remember_last_connection(conn);
+        db::remember_last_connection(&conn);
         self.touch_last_used(&conn.name);
-        let started = self.start_language_server(conn, &reach_host, reach_port, password, cx);
+        let started = self.start_language_server(&conn, &reach_host, reach_port, password, cx);
         self.completer = (!started).then(|| {
             let schema = pool.driver().default_schema().unwrap_or_default();
             crate::complete::SchemaCompletion::new(pool.clone(), schema)
         });
         self.reach = Some((reach_host.clone(), reach_port));
         self.active_conn = Some((conn.clone(), password.to_string()));
+        // A database just opened under this profile: feed the dropdown's
+        // "recent" shortcut list.
+        if !conn.database.trim().is_empty() {
+            crate::settings::push_recent_database(cx, &conn.name, &conn.database);
+        }
         let list_pool = pool.clone();
         cx.spawn(async move |weak, cx: &mut AsyncApp| {
             let dbs = db::fetch_databases(&list_pool).await;
@@ -2437,7 +2476,7 @@ impl TuskApp {
                 match result {
                     Ok(c) => {
                         this.reset_workspace();
-                        this.connected_with(c, &conn, &password, cx);
+                        this.connected_with(c, &password, cx);
                     }
                     Err(e) => {
                         this.status_line.clear();
@@ -2477,7 +2516,7 @@ impl TuskApp {
                 match result {
                     Ok((c, pw)) => {
                         this.form.notice = None;
-                        this.connected_with(c, &conn, &pw, cx);
+                        this.connected_with(c, &pw, cx);
                     }
                     Err(e) => {
                         // Render turns the error notice into a toast.
@@ -3426,7 +3465,7 @@ impl TuskApp {
                     Ok(c) => {
                         this.form.selected = Some(ix);
                         this.form.load(&conn, window, cx);
-                        this.connected_with(c, &conn, &password, cx);
+                        this.connected_with(c, &password, cx);
                     }
                     Err(e) => {
                         log::warn!("switch to {}: {e}", conn.name);
