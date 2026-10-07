@@ -193,16 +193,29 @@ impl SavedConnection {
         match self.engine.form() {
             Form::File | Form::UrlToken => !path.is_empty(),
             Form::CloudflareD1 => {
-                !self.opt("account_id").is_empty() && !self.database.trim().is_empty()
+                // Database is optional: an account-level profile lists
+                // its D1 databases after connecting.
+                !self.opt("account_id").is_empty()
             }
             Form::Snowflake => !self.opt("account").is_empty() && !self.user.trim().is_empty(),
             Form::BigQuery => !self.opt("project").is_empty(),
             Form::DynamoDb => !self.opt("region").is_empty() || !self.host.trim().is_empty(),
             Form::Server => {
-                // Some servers take any database / no user.
+                // Some servers take any database / no user. Databases are
+                // optional where a default exists (or server-wide works):
+                // the dropdown lists the rest after connecting.
                 let needs_db = !matches!(
                     self.engine,
-                    Engine::Redis | Engine::MongoDb | Engine::Cassandra | Engine::ClickHouse
+                    Engine::Redis
+                        | Engine::MongoDb
+                        | Engine::Cassandra
+                        | Engine::ClickHouse
+                        | Engine::Postgres
+                        | Engine::Greenplum
+                        | Engine::Cockroach
+                        | Engine::MySql
+                        | Engine::MariaDb
+                        | Engine::MsSql
                 );
                 let needs_user = !matches!(
                     self.engine,
@@ -1625,6 +1638,20 @@ pub async fn connect(
     password: String,
     ssh_secret: Option<String>,
 ) -> DbResult<Connected> {
+    let mut conn = conn;
+    // A blank database lands in the engine's default ("" stays blank:
+    // MySQL connects server-wide, ClickHouse defaults inside its driver).
+    if conn.database.trim().is_empty() {
+        let d = conn.engine.default_database();
+        if !d.is_empty() {
+            conn.database = d.to_string();
+        }
+    }
+    // A D1 profile is an account: blank = its most recently used database
+    // (else the first); a legacy id becomes the database's name.
+    if conn.engine == crate::engine::Engine::CloudflareD1 {
+        conn.database = crate::drivers::d1::resolve_database(&conn, &password).await?;
+    }
     let (tunnel, host, port) = match conn.ssh.clone() {
         Some(ssh) => {
             let secret = ssh_secret
@@ -1843,6 +1870,53 @@ mod tests {
             name: name.to_string(),
             ..dev_default()
         }
+    }
+
+    #[test]
+    fn optional_database_engines_validate_blank() {
+        use crate::engine::Engine;
+        // Postgres-family / MySQL / MSSQL / ClickHouse: database optional.
+        for engine in [
+            Engine::Postgres,
+            Engine::Greenplum,
+            Engine::Cockroach,
+            Engine::MySql,
+            Engine::MariaDb,
+            Engine::MsSql,
+            Engine::ClickHouse,
+        ] {
+            let mut c = named("blank-db");
+            c.engine = engine;
+            c.database = String::new();
+            assert!(c.is_valid(), "{engine:?} should accept a blank database");
+        }
+        // Redshift / Vertica / Oracle still require one.
+        for engine in [Engine::Redshift, Engine::Vertica, Engine::Oracle] {
+            let mut c = named("needs-db");
+            c.engine = engine;
+            c.database = String::new();
+            assert!(!c.is_valid(), "{engine:?} should still require a database");
+        }
+        // D1: only the account id is required.
+        let mut c = named("d1-account");
+        c.engine = Engine::CloudflareD1;
+        c.database = String::new();
+        c.options.insert("account_id".into(), "acct".into());
+        assert!(c.is_valid());
+        c.options.remove("account_id");
+        assert!(!c.is_valid(), "D1 without an account id must not validate");
+    }
+
+    #[test]
+    fn engine_default_database_mapping() {
+        use crate::engine::Engine;
+        assert_eq!(Engine::Postgres.default_database(), "postgres");
+        assert_eq!(Engine::Greenplum.default_database(), "postgres");
+        assert_eq!(Engine::Cockroach.default_database(), "defaultdb");
+        assert_eq!(Engine::MsSql.default_database(), "master");
+        assert_eq!(Engine::MySql.default_database(), "");
+        assert_eq!(Engine::ClickHouse.default_database(), "");
+        assert_eq!(Engine::CloudflareD1.default_database(), "");
     }
 
     #[test]
