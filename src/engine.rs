@@ -26,6 +26,7 @@ pub enum Engine {
     Snowflake,
     BigQuery,
     Redis,
+    Valkey,
     MongoDb,
     Cassandra,
     DynamoDb,
@@ -134,13 +135,14 @@ const SQL_BASIC: Caps = Caps {
 };
 
 impl Engine {
-    pub const ALL: [Engine; 20] = [
+    pub const ALL: [Engine; 21] = [
         Engine::Postgres,
         Engine::MySql,
         Engine::MariaDb,
         Engine::Sqlite,
         Engine::MsSql,
         Engine::Redis,
+        Engine::Valkey,
         Engine::Cassandra,
         Engine::MongoDb,
         Engine::Oracle,
@@ -176,6 +178,7 @@ impl Engine {
             Engine::Snowflake => "Snowflake",
             Engine::BigQuery => "BigQuery",
             Engine::Redis => "Redis",
+            Engine::Valkey => "Valkey",
             Engine::MongoDb => "MongoDB",
             Engine::Cassandra => "Cassandra",
             Engine::DynamoDb => "DynamoDB",
@@ -202,6 +205,7 @@ impl Engine {
             Engine::Snowflake => "Sf",
             Engine::BigQuery => "Bq",
             Engine::Redis => "Re",
+            Engine::Valkey => "Vk",
             Engine::MongoDb => "Mg",
             Engine::Cassandra => "Ca",
             Engine::DynamoDb => "Dy",
@@ -227,6 +231,7 @@ impl Engine {
             Engine::Snowflake => 0x29B5E8,
             Engine::BigQuery => 0x669DF6,
             Engine::Redis => 0xDC382D,
+            Engine::Valkey => 0x0A7EF2,
             Engine::MongoDb => 0x47A248,
             Engine::Cassandra => 0x1287B1,
         }
@@ -242,7 +247,7 @@ impl Engine {
             Engine::MsSql => 1433,
             Engine::Oracle => 1521,
             Engine::ClickHouse => 8123,
-            Engine::Redis => 6379,
+            Engine::Redis | Engine::Valkey => 6379,
             Engine::MongoDb => 27017,
             Engine::Cassandra => 9042,
             _ => 0,
@@ -281,7 +286,7 @@ impl Engine {
         match self {
             Engine::Oracle => "Service name (FREEPDB1)",
             Engine::Cassandra => "Keyspace (optional)",
-            Engine::Redis => "Database index (0)",
+            Engine::Redis | Engine::Valkey => "Database index (0)",
             Engine::MongoDb => "Database (optional)",
             Engine::ClickHouse => "default",
             Engine::MsSql => "master",
@@ -332,7 +337,7 @@ impl Engine {
             Engine::Snowflake => Dialect::Snowflake,
             Engine::BigQuery => Dialect::BigQuery,
             Engine::Cassandra => Dialect::Cql,
-            Engine::Redis | Engine::MongoDb | Engine::DynamoDb => Dialect::NoSql,
+            Engine::Redis | Engine::Valkey | Engine::MongoDb | Engine::DynamoDb => Dialect::NoSql,
         }
     }
 
@@ -346,6 +351,7 @@ impl Engine {
             Engine::MySql
                 | Engine::MariaDb
                 | Engine::Redis
+                | Engine::Valkey
                 | Engine::MongoDb
                 | Engine::ClickHouse
                 | Engine::Cassandra
@@ -412,7 +418,7 @@ impl Engine {
                 transactions: false,
                 ..SQL_BASIC
             },
-            Engine::Redis => Caps {
+            Engine::Redis | Engine::Valkey => Caps {
                 views: false,
                 indexes: false,
                 transactions: false,
@@ -436,9 +442,12 @@ impl Engine {
         };
         // Engines whose drivers list server sessions (drivers::sessions).
         let processes = crate::drivers::sessions::list_sql(self).is_some()
-            || matches!(self, Engine::Redis | Engine::MongoDb);
+            || matches!(self, Engine::Redis | Engine::Valkey | Engine::MongoDb);
         // Structure / index edits and New Table as each engine's DDL (crate::ddl).
-        let edit_structure = !matches!(self, Engine::Redis | Engine::MongoDb | Engine::DynamoDb);
+        let edit_structure = !matches!(
+            self,
+            Engine::Redis | Engine::Valkey | Engine::MongoDb | Engine::DynamoDb
+        );
         Caps {
             processes,
             edit_structure,
@@ -480,6 +489,7 @@ impl Engine {
             Engine::Snowflake => "snowflake",
             Engine::BigQuery => "bigquery",
             Engine::Redis => "redis",
+            Engine::Valkey => "valkey",
             Engine::MongoDb => "mongodb",
             Engine::Cassandra => "cassandra",
             Engine::DynamoDb => "dynamodb",
@@ -659,6 +669,7 @@ pub fn parse_url(url: &str) -> Option<ParsedUrl> {
         "oracle" => Engine::Oracle,
         "clickhouse" => Engine::ClickHouse,
         "redis" | "rediss" => Engine::Redis,
+        "valkey" => Engine::Valkey,
         "mongodb" | "mongodb+srv" => Engine::MongoDb,
         "cassandra" => Engine::Cassandra,
         _ => return None,
@@ -768,6 +779,9 @@ mod tests {
             assert!(!e.label().is_empty());
             assert_eq!(e.abbr().len(), 2);
         }
-        assert_eq!(Engine::ALL.len(), 20);
+        // RES twins with bundled logos (the rest fall back to the badge).
+        assert!(crate::icons::engine_logo(Engine::Redis).is_some());
+        assert!(crate::icons::engine_logo(Engine::Valkey).is_some());
+        assert_eq!(Engine::ALL.len(), 21);
     }
 }

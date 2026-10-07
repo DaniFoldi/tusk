@@ -1,6 +1,7 @@
-//! Redis: each database index is a schema (`db0` …), with one `keys` table
-//! (key, type, ttl, value). Keys are collected with SCAN, sorted and paged;
-//! the editor runs Redis commands (`GET k`, `HGETALL h`, …).
+//! Redis / Valkey: each database index is a schema (`db0` …), with one
+//! `keys` table (key, type, ttl, value). Keys are collected with SCAN,
+//! sorted and paged; the editor runs Redis commands (`GET k`, `HGETALL h`,
+//! …).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +23,8 @@ const KEY_CAP: usize = 200_000;
 pub const TABLE: &str = "keys";
 
 pub struct Redis {
+    /// Redis or Valkey — same wire protocol (RESP), same commands.
+    engine: Engine,
     info: redis::ConnectionInfo,
     default_db: i64,
     conns: Arc<Mutex<HashMap<i64, ConnectionManager>>>,
@@ -49,6 +52,7 @@ pub async fn connect(
         },
     };
     let r = Redis {
+        engine: conn.engine,
         info,
         default_db,
         conns: Default::default(),
@@ -336,7 +340,7 @@ fn columns() -> Vec<GridColumnMeta> {
 
 impl Driver for Redis {
     fn engine(&self) -> Engine {
-        Engine::Redis
+        self.engine
     }
     fn default_schema(&self) -> Option<String> {
         Some(format!("db{}", self.default_db))
@@ -346,18 +350,22 @@ impl Driver for Redis {
     }
     fn version(&self) -> Fut<String> {
         let this = self.clone_handle();
+        let label = self.engine.label().to_string();
         Box::pin(async move {
             let v = this
                 .command(this.default_db, vec!["INFO".into(), "server".into()])
                 .await?;
             let text = json_of(v).as_str().unwrap_or_default().to_string();
+            // Valkey reports valkey_version: (plus a redis_version: for
+            // compatibility); Redis only the latter.
             let ver = text
                 .lines()
-                .find_map(|l| l.strip_prefix("redis_version:"))
+                .find_map(|l| l.strip_prefix("valkey_version:"))
+                .or_else(|| text.lines().find_map(|l| l.strip_prefix("redis_version:")))
                 .unwrap_or("?")
                 .trim()
                 .to_string();
-            Ok(format!("Redis {ver}"))
+            Ok(format!("{label} {ver}"))
         })
     }
     fn databases(&self) -> Fut<Vec<String>> {
@@ -592,6 +600,7 @@ impl Driver for Redis {
 impl Redis {
     fn clone_handle(&self) -> Arc<Redis> {
         Arc::new(Redis {
+            engine: self.engine,
             info: self.info.clone(),
             default_db: self.default_db,
             conns: self.conns.clone(),

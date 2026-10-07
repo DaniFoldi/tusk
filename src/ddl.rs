@@ -322,7 +322,7 @@ pub fn starter_query(e: Engine, schema: &str, table: Option<&str>) -> String {
     let Some(t) = table else {
         return match e {
             Engine::MongoDb => "db.getCollectionNames()".into(),
-            Engine::Redis => "INFO server".into(),
+            Engine::Redis | Engine::Valkey => "INFO server".into(),
             Engine::Oracle => "SELECT 1 FROM dual;".into(),
             Engine::Cassandra => "SELECT release_version FROM system.local;".into(),
             Engine::DynamoDb => "SELECT * FROM \"table\"".into(),
@@ -338,7 +338,7 @@ pub fn starter_query(e: Engine, schema: &str, table: Option<&str>) -> String {
             "db.getCollection({}).find({{}}).limit(100)",
             serde_json::json!(t)
         ),
-        Engine::Redis => "SCAN 0 MATCH * COUNT 100".into(),
+        Engine::Redis | Engine::Valkey => "SCAN 0 MATCH * COUNT 100".into(),
         Engine::DynamoDb => format!("SELECT * FROM {}", q(e, t)),
         Engine::MsSql => format!("SELECT TOP 100 * FROM {target};"),
         Engine::Oracle => format!("SELECT * FROM {target} FETCH FIRST 100 ROWS ONLY;"),

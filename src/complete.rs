@@ -751,7 +751,7 @@ impl CompletionProvider for SchemaCompletion {
         let engine = self.db.engine();
         cx.background_spawn(async move {
             let items = match engine {
-                Engine::Redis => {
+                Engine::Redis | Engine::Valkey => {
                     // Commands at the start of a line only.
                     let line = full[..offset - prefix.len()]
                         .rsplit('\n')

@@ -493,7 +493,7 @@ pub async fn connect(
         Engine::ClickHouse => clickhouse::connect(conn, host, port, secret).await,
         Engine::Snowflake => snowflake::connect(conn, secret).await,
         Engine::BigQuery => bigquery::connect(conn, secret).await,
-        Engine::Redis => redis::connect(conn, host, port, secret).await,
+        Engine::Redis | Engine::Valkey => redis::connect(conn, host, port, secret).await,
         Engine::MongoDb => mongo::connect(conn, host, port, secret).await,
         Engine::Cassandra => cassandra::connect(conn, host, port, secret).await,
         Engine::DynamoDb => dynamo::connect(conn, secret).await,

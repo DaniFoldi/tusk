@@ -207,6 +207,7 @@ impl SavedConnection {
                 let needs_db = !matches!(
                     self.engine,
                     Engine::Redis
+                        | Engine::Valkey
                         | Engine::MongoDb
                         | Engine::Cassandra
                         | Engine::ClickHouse
@@ -219,7 +220,7 @@ impl SavedConnection {
                 );
                 let needs_user = !matches!(
                     self.engine,
-                    Engine::Redis | Engine::MongoDb | Engine::Cassandra
+                    Engine::Redis | Engine::Valkey | Engine::MongoDb | Engine::Cassandra
                 );
                 !self.host.trim().is_empty()
                     && self.port != 0
@@ -829,7 +830,9 @@ pub fn classify_statement(sql: &str) -> StmtKind {
     // Shell calls (`db.x.find(…)`, `HGETALL k`) answer with rows, writes included.
     if matches!(
         engine(),
-        crate::engine::Engine::MongoDb | crate::engine::Engine::Redis
+        crate::engine::Engine::MongoDb
+            | crate::engine::Engine::Redis
+            | crate::engine::Engine::Valkey
     ) {
         return StmtKind::Query;
     }

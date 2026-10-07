@@ -188,7 +188,7 @@ impl ConnDialog {
             crate::engine::Engine::Cockroach => "defaultdb",
             crate::engine::Engine::MsSql => "master",
             crate::engine::Engine::Oracle => "FREEPDB1",
-            crate::engine::Engine::Redis => "0",
+            crate::engine::Engine::Redis | crate::engine::Engine::Valkey => "0",
             crate::engine::Engine::ClickHouse => "default",
             _ => "",
         };
@@ -703,7 +703,7 @@ impl ConnDialog {
                     ])
                     .into_any_element(),
                 );
-                if engine != Engine::Redis {
+                if !matches!(engine, Engine::Redis | Engine::Valkey) {
                     rows.push(
                         line(vec![
                             label("User").into_any_element(),
@@ -726,7 +726,10 @@ impl ConnDialog {
                     ])
                     .into_any_element(),
                 );
-                if !matches!(engine, Engine::Redis | Engine::Cassandra | Engine::MongoDb) {
+                if !matches!(
+                    engine,
+                    Engine::Redis | Engine::Valkey | Engine::Cassandra | Engine::MongoDb
+                ) {
                     rows.push(
                         line(vec![
                             label("SSL mode").into_any_element(),

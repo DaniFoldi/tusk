@@ -382,8 +382,10 @@ fn engine_of(image: &str) -> Option<Engine> {
             Engine::Oracle
         }
         r if r.starts_with("clickhouse") => Engine::ClickHouse,
-        "redis" | "redis-stack" | "redis-stack-server" | "valkey" | "keydb" | "dragonfly"
-        | "garnet" => Engine::Redis,
+        "redis" | "redis-stack" | "redis-stack-server" | "keydb" | "dragonfly" | "garnet" => {
+            Engine::Redis
+        }
+        "valkey" => Engine::Valkey,
         "mongo"
         | "mongodb"
         | "mongodb-community-server"
@@ -407,7 +409,7 @@ fn container_port(engine: Engine, image: &str, command: &[String]) -> u16 {
             .and_then(|v| v.rsplit(':').next()?.parse().ok())
     };
     match engine {
-        Engine::Redis => flag("--port").unwrap_or(6379),
+        Engine::Redis | Engine::Valkey => flag("--port").unwrap_or(6379),
         Engine::ClickHouse => 8123,
         Engine::DynamoDb => flag("-port").unwrap_or(8000),
         Engine::LibSql => flag("--http-listen-addr").unwrap_or(8080),
@@ -513,7 +515,7 @@ fn creds(engine: Engine, image: &str, env: &HashMap<String, String>, command: &[
             c.password = get(&["CLICKHOUSE_PASSWORD", "CLICKHOUSE_ADMIN_PASSWORD"]);
             c.database = or(get(&["CLICKHOUSE_DB"]), "default");
         }
-        Engine::Redis => {
+        Engine::Redis | Engine::Valkey => {
             let flag = command
                 .iter()
                 .position(|a| a == "--requirepass")
@@ -828,7 +830,7 @@ mod tests {
             engine_of("clickhouse/clickhouse-server"),
             Some(Engine::ClickHouse)
         );
-        assert_eq!(engine_of("valkey/valkey:8"), Some(Engine::Redis));
+        assert_eq!(engine_of("valkey/valkey:8"), Some(Engine::Valkey));
         assert_eq!(engine_of("mongo:7"), Some(Engine::MongoDb));
         assert_eq!(engine_of("mongo-express"), None);
         assert_eq!(engine_of("amazon/dynamodb-local"), Some(Engine::DynamoDb));

@@ -90,6 +90,7 @@ pub fn engine_logo(e: crate::engine::Engine) -> Option<&'static [u8]> {
         E::Sqlite => include_bytes!("../assets/icons/engines/sqlite.svg"),
         E::MsSql => include_bytes!("../assets/icons/engines/mssql.svg"),
         E::Redis => include_bytes!("../assets/icons/engines/redis.svg"),
+        E::Valkey => include_bytes!("../assets/icons/engines/valkey.svg"),
         E::Cassandra => include_bytes!("../assets/icons/engines/cassandra.svg"),
         E::MongoDb => include_bytes!("../assets/icons/engines/mongodb.svg"),
         E::Oracle => include_bytes!("../assets/icons/engines/oracle.svg"),
