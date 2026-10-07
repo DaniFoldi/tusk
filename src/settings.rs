@@ -121,6 +121,9 @@ pub struct Prefs {
     pub sidebar_layout: String,
     /// Connection groups folded in the "Connections tree" sidebar.
     pub sidebar_collapsed_groups: Vec<String>,
+    /// Databases opened recently, per connection (most recent first):
+    /// feeds the database dropdown's shortcut list. Keyed by profile name.
+    pub recent_databases: std::collections::BTreeMap<String, Vec<String>>,
     // ---- filter bar defaults (its ☰ menu) ----
     /// Column picker order: "Table order" | "Alphabetical".
     pub filter_column_sort: String,
@@ -190,6 +193,7 @@ impl Default for Prefs {
             accent: "Teal".to_string(),
             sidebar_layout: SIDEBAR_LAYOUTS[0].into(),
             sidebar_collapsed_groups: Vec::new(),
+            recent_databases: Default::default(),
             filter_column_sort: FILTER_COLUMN_SORTS[0].into(),
             filter_default_column: FILTER_DEFAULT_COLUMNS[0].into(),
             filter_default_operator: "=".into(),
@@ -503,6 +507,26 @@ pub fn toggle_group_collapsed(cx: &mut App, name: &str) {
         } else {
             p.sidebar_collapsed_groups.push(name.to_string());
         }
+    });
+}
+
+/// Databases opened recently under a connection, most recent first (the
+/// database dropdown's shortcut list).
+pub fn recent_databases(conn: &str) -> Vec<String> {
+    with(|p| p.recent_databases.get(conn).cloned().unwrap_or_default())
+}
+
+/// Record a database as just opened under a connection (deduplicated,
+/// newest first, ten kept).
+pub fn push_recent_database(cx: &mut App, conn: &str, db: &str) {
+    if conn.is_empty() || db.is_empty() {
+        return;
+    }
+    update(cx, |p| {
+        let list = p.recent_databases.entry(conn.to_string()).or_default();
+        list.retain(|d| d != db);
+        list.insert(0, db.to_string());
+        list.truncate(10);
     });
 }
 
