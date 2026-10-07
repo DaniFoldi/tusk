@@ -264,6 +264,18 @@ impl Engine {
         }
     }
 
+    /// The database a profile lands in when its database field is blank
+    /// ("" = stay server-wide / pick after connecting). ClickHouse
+    /// substitutes "default" in its driver, so it stays "".
+    pub fn default_database(self) -> &'static str {
+        match self {
+            Engine::Postgres | Engine::Greenplum => "postgres",
+            Engine::Cockroach => "defaultdb",
+            Engine::MsSql => "master",
+            _ => "",
+        }
+    }
+
     /// Placeholder for the database field (what it means per engine).
     pub fn database_hint(self) -> &'static str {
         match self {
@@ -274,6 +286,9 @@ impl Engine {
             Engine::ClickHouse => "default",
             Engine::MsSql => "master",
             Engine::Cockroach => "defaultdb",
+            Engine::Postgres | Engine::Greenplum => "mydb (optional — defaults to postgres)",
+            Engine::MySql | Engine::MariaDb => "mydb (optional)",
+            Engine::CloudflareD1 => "Database (optional — pick after connecting)",
             _ => "mydb",
         }
     }
@@ -323,6 +338,8 @@ impl Engine {
 
     /// A database *is* the schema level (MySQL databases, Redis indexes,
     /// Mongo databases, keyspaces …): the title bar shows one picker.
+    /// D1 is *not* here — an account holds many named databases and the
+    /// title bar gets a real database picker (its only schema is "main").
     pub fn databases_are_schemas(self) -> bool {
         matches!(
             self,
@@ -334,7 +351,6 @@ impl Engine {
                 | Engine::Cassandra
                 | Engine::Sqlite
                 | Engine::LibSql
-                | Engine::CloudflareD1
                 | Engine::DynamoDb
         )
     }
