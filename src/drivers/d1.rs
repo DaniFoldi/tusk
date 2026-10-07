@@ -1,7 +1,10 @@
-//! Cloudflare D1 over the Cloudflare API (`/accounts/{id}/d1/database/{id}`).
-//! Queries go to `/raw` (columns + rows, order kept); a save batch is one
-//! atomic `batch` request. SQLite underneath: catalog queries are shared —
-//! but sqlite_version() is blocked server-side, so `version` is static.
+//! Cloudflare D1 over the Cloudflare API. A profile is an *account*: the
+//! database field is optional — `resolve_database` picks one (most recently
+//! used, else the first) when it is blank, and the control plane lists the
+//! account's databases for the title-bar picker. Queries go to a database's
+//! `/raw` endpoint (columns + rows, order kept); a save batch is one atomic
+//! `batch` request. SQLite underneath: catalog queries are shared — but
+//! sqlite_version() is blocked server-side, so `version` is static.
 
 use std::sync::Arc;
 
@@ -20,8 +23,11 @@ const API: &str = "https://api.cloudflare.com/client/v4";
 
 #[derive(Clone)]
 pub struct Api {
+    /// Account URL: `{root}/accounts/{account_id}`.
     base: String,
     token: String,
+    /// The picked database's id. `None` until one is (account mode).
+    database_id: Option<String>,
 }
 
 pub struct D1 {
@@ -29,20 +35,69 @@ pub struct D1 {
     rows: RowsFn,
 }
 
-pub async fn connect(conn: &SavedConnection, token: String) -> DbResult<Db> {
+/// What `database` on a profile should read before connecting:
+/// - blank → the most recently used database that still exists, else the
+///   first by name ("" when the account has none);
+/// - a legacy profile's database id → that database's *name*;
+/// - anything else → itself (a name; the driver maps it to its id).
+pub async fn resolve_database(conn: &SavedConnection, token: &str) -> DbResult<String> {
+    let api = account_api(conn, token);
+    let db = conn.database.trim();
+    if db.is_empty() {
+        let dbs = api.list().await?;
+        return Ok(crate::settings::recent_databases(&conn.name)
+            .into_iter()
+            .find(|recent| dbs.iter().any(|(name, _)| name == recent))
+            .or_else(|| dbs.first().map(|(name, _)| name.clone()))
+            .unwrap_or_default());
+    }
+    if uuid_shaped(db) {
+        let v = http::send_json(api.account_get(&format!("d1/database/{db}"))).await?;
+        check(&v)?;
+        return Ok(v["result"]["name"].as_str().unwrap_or_default().to_string());
+    }
+    Ok(db.to_string())
+}
+
+/// `xxxxxxxx-xxxx-…`: a D1 database id, as older profiles stored it.
+fn uuid_shaped(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        && s.matches('-').count() == 4
+}
+
+fn account_api(conn: &SavedConnection, token: &str) -> Api {
     let root = match conn.opt("endpoint") {
         "" => API.to_string(),
         e => e.trim_end_matches('/').to_string(),
     };
-    let api = Api {
-        base: format!(
-            "{root}/accounts/{}/d1/database/{}",
-            conn.opt("account_id"),
-            conn.database.trim()
-        ),
-        token,
+    Api {
+        base: format!("{root}/accounts/{}", conn.opt("account_id")),
+        token: token.to_string(),
+        database_id: None,
+    }
+}
+
+pub async fn connect(conn: &SavedConnection, token: String) -> DbResult<Db> {
+    let api = account_api(conn, &token);
+    let name = conn.database.trim().to_string();
+    let api = if name.is_empty() {
+        // Account mode: the list call proves the token + account and
+        // leaves `database_id` unset until a database is picked.
+        api.list().await?;
+        api
+    } else {
+        let uuid = api
+            .list()
+            .await?
+            .into_iter()
+            .find(|(n, _)| n == &name)
+            .map(|(_, u)| u)
+            .ok_or_else(|| format!("No D1 database named \"{name}\" in this account"))?;
+        let probe = api.with_database(uuid);
+        probe.raw("SELECT 1".into(), Vec::new()).await?;
+        probe
     };
-    api.raw("SELECT 1".into(), Vec::new()).await?;
     let a = api.clone();
     let rows: RowsFn = Arc::new(move |sql: String| {
         let a = a.clone();
@@ -77,11 +132,64 @@ fn params(p: &[Option<String>]) -> Vec<Value> {
 }
 
 impl Api {
-    fn post(&self, path: &str, body: Value) -> reqwest::RequestBuilder {
+    /// The picked database's REST URL.
+    fn db_url(&self) -> DbResult<String> {
+        let id = self
+            .database_id
+            .as_deref()
+            .ok_or("No D1 database picked — choose one from the database menu")?;
+        Ok(format!("{}/d1/database/{id}", self.base))
+    }
+
+    fn with_database(mut self, id: String) -> Self {
+        self.database_id = Some(id);
+        self
+    }
+
+    /// A GET against the account (control plane).
+    fn account_get(&self, path: &str) -> reqwest::RequestBuilder {
         http::client()
-            .post(format!("{}/{path}", self.base))
+            .get(format!("{}/{path}", self.base))
             .bearer_auth(&self.token)
-            .json(&body)
+    }
+
+    /// A POST against the picked database's REST subtree.
+    fn db_post(&self, path: &str, body: Value) -> DbResult<reqwest::RequestBuilder> {
+        Ok(http::client()
+            .post(format!("{}/{}", self.db_url()?, path))
+            .bearer_auth(&self.token)
+            .json(&body))
+    }
+
+    /// The account's databases — `(name, uuid)`, by name. Pages of 100,
+    /// capped at 1000 (an account may hold tens of thousands).
+    async fn list(&self) -> DbResult<Vec<(String, String)>> {
+        let mut out = Vec::new();
+        for page in 1..=10 {
+            let v =
+                http::send_json(self.account_get(&format!("d1/database?page={page}&per_page=100")))
+                    .await?;
+            check(&v)?;
+            let batch = v["result"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| {
+                    (
+                        d["name"].as_str().unwrap_or_default().to_string(),
+                        d["uuid"].as_str().unwrap_or_default().to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let done = batch.len() < 100;
+            out.extend(batch);
+            if done {
+                break;
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
     }
 
     /// One statement: (columns, rows, changes).
@@ -90,8 +198,8 @@ impl Api {
         sql: String,
         p: Vec<Option<String>>,
     ) -> DbResult<(Vec<String>, Vec<Vec<Value>>, u64)> {
-        let v =
-            http::send_json(self.post("raw", json!({"sql": sql, "params": params(&p)}))).await?;
+        let v = http::send_json(self.db_post("raw", json!({"sql": sql, "params": params(&p)}))?)
+            .await?;
         check(&v)?;
         let r = v["result"]
             .as_array()
@@ -131,7 +239,7 @@ impl Api {
             .iter()
             .map(|s| json!({"sql": s.sql, "params": params(&s.params)}))
             .collect();
-        let v = http::send_json(self.post("query", json!({ "batch": batch }))).await?;
+        let v = http::send_json(self.db_post("query", json!({ "batch": batch }))?).await?;
         check(&v)?;
         Ok(v["result"]
             .as_array()
@@ -150,10 +258,14 @@ impl Driver for D1 {
         Some("main".into())
     }
     fn version(&self) -> Fut<String> {
-        Box::pin(async { Ok("Cloudflare D1".to_string()) })
+        // D1 rejects sqlite_version() with "not authorized to use
+        // function", so the engine version isn't reachable through SQL.
+        // Report the service, the way BigQuery does.
+        Box::pin(async { Ok("Cloudflare D1".into()) })
     }
     fn databases(&self) -> Fut<Vec<String>> {
-        Box::pin(async { Ok(vec!["main".to_string()]) })
+        let api = self.api.clone();
+        Box::pin(async move { Ok(api.list().await?.into_iter().map(|(n, _)| n).collect()) })
     }
     fn schemas(&self) -> Fut<Vec<String>> {
         Box::pin(async { Ok(vec!["main".to_string()]) })
@@ -253,7 +365,10 @@ mod tests {
     use crate::drivers::live;
     use crate::engine::Engine;
 
-    /// Against a local stand-in for the D1 API (scratch `d1_mock.py`, SQLite underneath).
+    /// Against a local stand-in for the D1 API (scratch `d1_mock.py`, SQLite
+    /// underneath). The mock must also serve the account-level database
+    /// list: `GET /accounts/{acct}/d1/database` — connect resolves the
+    /// profile's database name to its id through it.
     #[test]
     fn live_d1_mock() {
         if !live::reachable(38787) {
@@ -272,5 +387,14 @@ mod tests {
         ))
         .unwrap();
         live::exercise(c, "tok", "people", "email");
+    }
+
+    #[test]
+    fn uuid_shaped_only_matches_ids() {
+        let f = super::uuid_shaped;
+        assert!(f("6a1e6b2f-5c0f-4d9e-9f6c-2d8e1a4b7c9d"));
+        assert!(!f("db-1"));
+        assert!(!f("6a1e6b2f-5c0f-4d9e-9f6c-2d8e1a4b7c9"));
+        assert!(!f(""));
     }
 }
