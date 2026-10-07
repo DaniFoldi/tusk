@@ -1,6 +1,7 @@
 //! Cloudflare D1 over the Cloudflare API (`/accounts/{id}/d1/database/{id}`).
 //! Queries go to `/raw` (columns + rows, order kept); a save batch is one
-//! atomic `batch` request. SQLite underneath: catalog queries are shared.
+//! atomic `batch` request. SQLite underneath: catalog queries are shared —
+//! but sqlite_version() is blocked server-side, so `version` is static.
 
 use std::sync::Arc;
 
@@ -141,14 +142,6 @@ impl Api {
     }
 }
 
-fn s(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        o => o.to_string(),
-    }
-}
-
 impl Driver for D1 {
     fn engine(&self) -> Engine {
         Engine::CloudflareD1
@@ -157,14 +150,7 @@ impl Driver for D1 {
         Some("main".into())
     }
     fn version(&self) -> Fut<String> {
-        let rows = self.rows.clone();
-        Box::pin(async move {
-            let r = rows("SELECT sqlite_version() AS v".into()).await?;
-            Ok(format!(
-                "Cloudflare D1 (SQLite {})",
-                r.first().map(|r| s(&r["v"])).unwrap_or_default()
-            ))
-        })
+        Box::pin(async { Ok("Cloudflare D1".to_string()) })
     }
     fn databases(&self) -> Fut<Vec<String>> {
         Box::pin(async { Ok(vec!["main".to_string()]) })
