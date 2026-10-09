@@ -106,6 +106,8 @@ pub struct Host {
     pub socket: PathBuf,
     /// Per-launch secret the bridge must send with every call.
     token: String,
+    /// `<run>/mcp-<pid>.json` — socket + token, how `tusk mcp` finds us.
+    instance: PathBuf,
 }
 
 /// 128 random bits as hex.
@@ -160,6 +162,20 @@ impl Host {
             std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
         }
         let token = random_token();
+        // The instance file (socket + token) lets `tusk mcp` — an MCP
+        // server started by *any* client — find this app. It sits beside
+        // the socket, same 0600 / 0700 protection, so it widens nothing:
+        // only this user could read the socket itself anyway.
+        let instance = dir.join(format!("mcp-{}.json", std::process::id()));
+        let _ = std::fs::write(
+            &instance,
+            json!({ "socket": socket.display().to_string(), "token": token }).to_string(),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(&instance, std::fs::Permissions::from_mode(0o600));
+        }
         let expected = token.clone();
         let (tx, rx) = mpsc::unbounded_channel::<ToolRequest>();
         crate::db::runtime().spawn(async move {
@@ -196,7 +212,14 @@ impl Host {
                 });
             }
         });
-        Ok((Self { socket, token }, rx))
+        Ok((
+            Self {
+                socket,
+                token,
+                instance,
+            },
+            rx,
+        ))
     }
 
     /// The MCP server entry for `session/new`.
@@ -214,15 +237,65 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.socket);
+        let _ = std::fs::remove_file(&self.instance);
     }
 }
 
-/// `tusk --mcp-bridge <socket>`: an MCP stdio server relaying to the app.
+/// The newest running Tusk's endpoint, for `tusk mcp`: instance files in
+/// the run dir, newest first, and the first socket that still answers
+/// wins (a crashed Tusk leaves its file behind; the probe skips it).
+pub fn discover() -> Option<(PathBuf, String)> {
+    discover_in(&crate::acp_registry::data_dir().join("run"))
+}
+
+fn discover_in(dir: &Path) -> Option<(PathBuf, String)> {
+    let mut cands: Vec<(std::time::SystemTime, PathBuf, String)> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with("mcp-") && n.ends_with(".json")
+        })
+        .filter_map(|e| {
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+            let socket = PathBuf::from(v["socket"].as_str()?);
+            let token = v["token"].as_str()?.to_string();
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, socket, token))
+        })
+        .collect();
+    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, socket, token) in cands {
+        if connect(&socket).is_ok() {
+            return Some((socket, token));
+        }
+    }
+    None
+}
+
+/// `tusk --mcp-bridge <socket>`: an ACP agent's MCP stdio server, its
+/// endpoint handed to the agent in the session spec (token in its env).
 pub fn run(socket: &Path) {
+    let socket = socket.to_path_buf();
     let token = std::env::var(TOKEN_ENV).unwrap_or_default();
+    serve(move || Some((socket.clone(), token.clone())));
+}
+
+/// `tusk mcp`: the same MCP server for any client — Claude Desktop, Claude
+/// Code, Cursor, opencode… — without the AI panel. The running app is found
+/// per call (newest live instance wins), so app restarts are followed
+/// without restarting the client. Calls before Tusk starts answer with a
+/// pointer to start it.
+pub fn run_standalone() {
+    serve(|| discover());
+}
+
+/// The MCP stdio loop, relaying each tool call to the app behind `resolve`.
+fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
-    let mut conn: Option<(Stream, BufReader<Stream>)> = None;
+    let mut conn: Option<(Stream, BufReader<Stream>, String)> = None;
     let mut next = 0u64;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -238,7 +311,7 @@ pub fn run(socket: &Path) {
                 "protocolVersion": msg["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "title": "Tusk", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Tools of Tusk, the PostgreSQL client the user is working in. \
+                "instructions": "Tools of Tusk, the database client the user is working in. \
                     Inspect the database with get_context / list_tables / describe_table. \
                     Put SQL for the user into a tab with open_sql_tab; never run it yourself."
             })),
@@ -251,7 +324,7 @@ pub fn run(socket: &Path) {
                     .unwrap_or_default()
                     .to_string();
                 let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-                let (ok, text) = call(&mut conn, socket, &token, next, &name, args);
+                let (ok, text) = call(&mut conn, &mut resolve, next, &name, args);
                 Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": !ok }))
             }
             _ => Err((-32601, format!("unknown method {method}"))),
@@ -267,25 +340,28 @@ pub fn run(socket: &Path) {
 }
 
 fn call(
-    conn: &mut Option<(Stream, BufReader<Stream>)>,
-    socket: &Path,
-    token: &str,
+    conn: &mut Option<(Stream, BufReader<Stream>, String)>,
+    resolve: &mut impl FnMut() -> Option<(PathBuf, String)>,
     id: u64,
     name: &str,
     args: Value,
 ) -> (bool, String) {
-    // One reconnect: the app may have restarted its host.
+    // One reconnect: the app may have restarted (standalone mode
+    // re-discovers, so the fresh instance is picked up).
     for _ in 0..2 {
         if conn.is_none() {
-            match connect(socket) {
+            let Some((socket, token)) = resolve() else {
+                return (false, "Tusk is not running — start Tusk first.".into());
+            };
+            match connect(&socket) {
                 Ok(s) => match s.try_clone() {
-                    Ok(r) => *conn = Some((s, BufReader::new(r))),
+                    Ok(r) => *conn = Some((s, BufReader::new(r), token)),
                     Err(e) => return (false, e.to_string()),
                 },
-                Err(_) => return (false, "Tusk is not running.".into()),
+                Err(_) => return (false, "Tusk is not running — start Tusk first.".into()),
             }
         }
-        let Some((w, r)) = conn.as_mut() else {
+        let Some((w, r, token)) = conn.as_mut() else {
             continue;
         };
         let req = json!({"id": id, "token": token, "tool": name, "args": args});
@@ -313,7 +389,9 @@ mod tests {
     use super::*;
 
     /// Bridge → app round trip over the real transport (Unix socket, or
-    /// loopback TCP on Windows), plus the token check.
+    /// loopback TCP on Windows), the token check, and the instance file
+    /// `tusk mcp` discovers. (One Host per test: the socket is named
+    /// after the process, so a second parallel start() would collide.)
     #[test]
     fn bridge_reaches_host_and_checks_token() {
         let (host, mut rx) = Host::start().unwrap();
@@ -323,12 +401,84 @@ mod tests {
             }
         });
         let mut conn = None;
-        let (ok, text) = call(&mut conn, &host.socket, &host.token, 1, "ping", json!({}));
+        let mut fixed = {
+            let (sock, tok) = (host.socket.clone(), host.token.clone());
+            move || Some((sock.clone(), tok.clone()))
+        };
+        let (ok, text) = call(&mut conn, &mut fixed, 1, "ping", json!({}));
         assert!(ok, "{text}");
         assert_eq!(text, "hi ping");
         let mut conn = None;
-        let (ok, _) = call(&mut conn, &host.socket, "wrong", 2, "ping", json!({}));
+        let mut wrong = {
+            let sock = host.socket.clone();
+            move || Some((sock.clone(), "wrong".to_string()))
+        };
+        let (ok, _) = call(&mut conn, &mut wrong, 2, "ping", json!({}));
         assert!(!ok, "a wrong token must be refused");
+        // The published instance file matches the host, and dies with it.
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&host.instance).unwrap()).unwrap();
+        assert_eq!(
+            v["socket"].as_str().unwrap(),
+            host.socket.display().to_string()
+        );
+        assert_eq!(v["token"].as_str().unwrap(), host.token);
+        let instance = host.instance.clone();
+        drop(host);
+        assert!(!instance.exists(), "Drop removes the instance file");
+    }
+
+    /// `tusk mcp` discovery: the newest *live* instance wins — a crashed
+    /// Tusk leaves a newer file behind, and its dead socket is skipped.
+    #[cfg(unix)]
+    #[test]
+    fn discovery_skips_dead_instances() {
+        let dir = std::env::temp_dir().join(format!("tusk-mcp-disc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("live.sock");
+        let _ = std::fs::remove_file(&live);
+        let listener = std::os::unix::net::UnixListener::bind(&live).unwrap();
+
+        let write = |name: &str, socket: &str, mtime: std::time::SystemTime| {
+            let path = dir.join(name);
+            std::fs::write(
+                &path,
+                json!({ "socket": socket, "token": format!("{name}-tok") }).to_string(),
+            )
+            .unwrap();
+            std::fs::File::open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+        };
+        let now = std::time::SystemTime::now();
+        // Older file → the live socket; newer file → a gone socket.
+        write(
+            "mcp-111.json",
+            &live.display().to_string(),
+            now - std::time::Duration::from_secs(60),
+        );
+        write(
+            "mcp-222.json",
+            &dir.join("gone.sock").display().to_string(),
+            now,
+        );
+
+        let found = discover_in(&dir).expect("the live instance must be found");
+        assert_eq!(found.0, live);
+        assert_eq!(found.1, "mcp-111.json-tok");
+
+        drop(listener);
+        assert!(discover_in(&dir).is_none(), "no live socket, no instance");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discovery_in_an_empty_dir_finds_nothing() {
+        let dir = std::env::temp_dir().join(format!("tusk-mcp-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(discover_in(&dir).is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

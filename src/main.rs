@@ -58,12 +58,19 @@ struct MainWindow(AnyWindowHandle);
 impl Global for MainWindow {}
 
 fn main() {
-    // Started by an AI agent as its MCP server: relay to the running app.
     let args: Vec<String> = std::env::args().collect();
+    // Started by an ACP agent as its MCP server: relay to the running app.
     if args.get(1).map(String::as_str) == Some(mcp_bridge::FLAG) {
         if let Some(sock) = args.get(2) {
             mcp_bridge::run(std::path::Path::new(sock));
         }
+        return;
+    }
+    // `tusk mcp`: the same MCP server for any client (Claude Desktop,
+    // Cursor, opencode…). It finds the running app itself.
+    let first = args.get(1).map(String::as_str);
+    if first == Some("mcp") || first == Some("--mcp") {
+        mcp_bridge::run_standalone();
         return;
     }
     #[cfg(target_os = "linux")]

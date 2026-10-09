@@ -76,6 +76,15 @@ Open the AI panel with <kbd>⌘</kbd><kbd>L</kbd> and ask a question. The agent 
 
 Tusk talks to agents over the [Agent Client Protocol](https://agentclientprotocol.com), so you can use Claude, Codex or Gemini CLI, or add your own. The agents reach your open connection through Tusk's built-in MCP server.
 
+> [!TIP]
+> You can also use that MCP server from **any MCP client** — Claude Desktop, Claude Code, Cursor, opencode — without the AI panel. Register Tusk once:
+>
+> ```json
+> { "mcpServers": { "tusk": { "command": "/path/to/tusk", "args": ["mcp"] } } }
+> ```
+>
+> On macOS with the installed app, the binary is `/Applications/Tusk.app/Contents/MacOS/tusk`. `tusk mcp` finds the running Tusk on its own (the newest window first, and it follows restarts); with Tusk closed, a tool call just answers "start Tusk first". The six tools are the same ones the built-in agents get: read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — they never run SQL.
+
 > [!NOTE]
 > The agent runs on your machine through the CLI you choose, under that CLI's own account and settings. Tusk doesn't send your data anywhere itself.
 
