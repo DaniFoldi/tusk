@@ -143,6 +143,9 @@ fn open_main_window(cx: &mut App, auto_connect: bool) {
             });
             let view =
                 cx.new(|cx| app::TuskApp::new(form, filter, conn_search, history_search, cx));
+            // The MCP bridge host starts with the app — not the AI panel —
+            // so `tusk mcp` finds a running Tusk, welcome screen included.
+            view.update(cx, |app, cx| app.start_mcp_host(window, cx));
             cx.set_global(app::TuskHandle(view.clone()));
             view.read(cx).focus_handle().focus(window, cx);
             // Red traffic light in a workspace = leave it: the

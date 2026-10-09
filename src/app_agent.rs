@@ -281,6 +281,32 @@ impl TuskApp {
         cx.notify();
     }
 
+    /// The MCP bridge starts with the app, not with the AI panel: `tusk mcp`
+    /// must find any running Tusk — welcome screen included. Tools answer
+    /// "No database connection is open in Tusk." until one is.
+    pub fn start_mcp_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ai.host.is_some() {
+            return;
+        }
+        match Host::start() {
+            Ok((host, mut rx)) => {
+                self.ai.host = Some(host);
+                let t = cx.spawn_in(window, async move |this, cx| {
+                    while let Some(req) = rx.recv().await {
+                        if this
+                            .update_in(cx, |this, window, cx| this.answer_tool(req, window, cx))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+                self.ai._tasks.push(t);
+            }
+            Err(e) => self.toast(false, format!("AI tools unavailable: {e}")),
+        }
+    }
+
     fn ensure_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ai.agents.is_empty() {
             self.ai.agents = self.agent_list(acp_registry::cached()).into();
@@ -295,25 +321,6 @@ impl TuskApp {
                 });
             });
             self.ai._tasks.push(t);
-        }
-        if self.ai.host.is_none() {
-            match Host::start() {
-                Ok((host, mut rx)) => {
-                    self.ai.host = Some(host);
-                    let t = cx.spawn_in(window, async move |this, cx| {
-                        while let Some(req) = rx.recv().await {
-                            if this
-                                .update_in(cx, |this, window, cx| this.answer_tool(req, window, cx))
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                    });
-                    self.ai._tasks.push(t);
-                }
-                Err(e) => self.toast(false, format!("AI tools unavailable: {e}")),
-            }
         }
         if self.ai.input.is_none() {
             let input = cx.new(|cx| {
