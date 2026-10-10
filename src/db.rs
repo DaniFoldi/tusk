@@ -1887,6 +1887,39 @@ pub async fn fetch_table_sizes(db: &Db, schema: &str) -> DbResult<Vec<(String, u
     db.driver().table_sizes(schema.to_string()).await
 }
 
+/// Size per database — bytes (or key counts for Redis / Valkey) — for the
+/// database dropdown. Engines without a catalog answer return none.
+pub async fn fetch_database_sizes(db: &Db) -> DbResult<Vec<(String, u64)>> {
+    db.driver().database_sizes().await
+}
+
+/// Postgres / Greenplum: bytes on disk per connectable database —
+/// pg_database_size over pg_database (heap + toast + indexes, or the
+/// sum of files under base/<oid> for a stopped db).
+pub(crate) async fn pg_fetch_database_sizes(pool: &sqlx::PgPool) -> DbResult<Vec<(String, u64)>> {
+    let pool = pool.clone();
+    run_logged(
+        "-- database sizes".to_string(),
+        crate::console::Source::Meta,
+        async move {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT datname::text, pg_database_size(datname)::bigint
+                   FROM pg_database
+                  WHERE datallowconn
+                  ORDER BY datname",
+            )
+            .fetch_all(&pool)
+            .await
+            .map_err(pg_error_message)?;
+            Ok(rows
+                .into_iter()
+                .map(|(name, bytes)| (name, bytes.max(0) as u64))
+                .collect())
+        },
+    )
+    .await
+}
+
 /// Postgres / Greenplum: heap + toast + indexes (pg_total_relation_size),
 /// ordinary and partitioned tables of one schema.
 pub(crate) async fn pg_fetch_table_sizes(
@@ -2267,6 +2300,24 @@ mod tests {
                 Ok::<_, String>(())
             })
             .expect("cleanup");
+    }
+
+    /// pg_fetch_database_sizes: every connectable database with its bytes.
+    #[test]
+    fn fetch_database_sizes_lists_connectable_dbs() {
+        let pool = pool_for_tests();
+        let sizes = RUNTIME
+            .handle()
+            .block_on(pg_fetch_database_sizes(&pool))
+            .expect("sizes");
+        let names: Vec<&str> = sizes.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"postgres") && names.contains(&"sample"),
+            "expected postgres + sample, got {names:?}"
+        );
+        for (name, bytes) in &sizes {
+            assert!(*bytes > 0, "{name} reported {bytes} bytes");
+        }
     }
 
     /// pg_fetch_table_sizes: every ordinary table of a schema with its

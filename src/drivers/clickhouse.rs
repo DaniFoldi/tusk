@@ -182,6 +182,26 @@ impl Driver for ClickHouse {
         );
         Box::pin(async move { Ok(f.await?.iter().map(|r| s(&r["name"])).collect()) })
     }
+    /// Bytes on disk per database: active parts only.
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let f = self.rows(
+            "SELECT database, SUM(bytes_on_disk) AS b
+               FROM system.parts WHERE active GROUP BY database ORDER BY database"
+                .into(),
+            10_000,
+        );
+        Box::pin(async move {
+            Ok(f.await?
+                .iter()
+                .map(|r| {
+                    (
+                        s(&r["database"]),
+                        r["b"].as_f64().map(|v| v.max(0.) as u64).unwrap_or(0),
+                    )
+                })
+                .collect())
+        })
+    }
     fn objects(&self, schema: String) -> Fut<ObjectTree> {
         let f = self.rows(
             format!(

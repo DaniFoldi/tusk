@@ -47,8 +47,8 @@ pub async fn resolve_database(conn: &SavedConnection, token: &str) -> DbResult<S
         let dbs = api.list().await?;
         return Ok(crate::settings::recent_databases(&conn.name)
             .into_iter()
-            .find(|recent| dbs.iter().any(|(name, _)| name == recent))
-            .or_else(|| dbs.first().map(|(name, _)| name.clone()))
+            .find(|recent| dbs.iter().any(|(name, _, _)| name == recent))
+            .or_else(|| dbs.first().map(|(name, _, _)| name.clone()))
             .unwrap_or_default());
     }
     if uuid_shaped(db) {
@@ -91,8 +91,8 @@ pub async fn connect(conn: &SavedConnection, token: String) -> DbResult<Db> {
             .list()
             .await?
             .into_iter()
-            .find(|(n, _)| n == &name)
-            .map(|(_, u)| u)
+            .find(|(n, _, _)| n == &name)
+            .map(|(_, u, _)| u)
             .ok_or_else(|| format!("No D1 database named \"{name}\" in this account"))?;
         let probe = api.with_database(uuid);
         probe.raw("SELECT 1".into(), Vec::new()).await?;
@@ -161,9 +161,9 @@ impl Api {
             .json(&body))
     }
 
-    /// The account's databases — `(name, uuid)`, by name. Pages of 100,
-    /// capped at 1000 (an account may hold tens of thousands).
-    async fn list(&self) -> DbResult<Vec<(String, String)>> {
+    /// The account's databases — `(name, uuid, file_size)` by name. Pages
+    /// of 100, capped at 1000 (an account may hold tens of thousands).
+    async fn list(&self) -> DbResult<Vec<(String, String, u64)>> {
         let mut out = Vec::new();
         for page in 1..=10 {
             let v =
@@ -179,6 +179,7 @@ impl Api {
                     (
                         d["name"].as_str().unwrap_or_default().to_string(),
                         d["uuid"].as_str().unwrap_or_default().to_string(),
+                        d["file_size"].as_u64().unwrap_or(0),
                     )
                 })
                 .collect::<Vec<_>>();
@@ -265,7 +266,21 @@ impl Driver for D1 {
     }
     fn databases(&self) -> Fut<Vec<String>> {
         let api = self.api.clone();
-        Box::pin(async move { Ok(api.list().await?.into_iter().map(|(n, _)| n).collect()) })
+        Box::pin(async move { Ok(api.list().await?.into_iter().map(|(n, _, _)| n).collect()) })
+    }
+    /// Bytes per database from the account list (`file_size`; 0 while a
+    /// database has never been queried — those report nothing).
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let api = self.api.clone();
+        Box::pin(async move {
+            Ok(api
+                .list()
+                .await?
+                .into_iter()
+                .filter(|(_, _, size)| *size > 0)
+                .map(|(n, _, size)| (n, size))
+                .collect())
+        })
     }
     fn schemas(&self) -> Fut<Vec<String>> {
         Box::pin(async { Ok(vec!["main".to_string()]) })

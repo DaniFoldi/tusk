@@ -371,6 +371,33 @@ impl Driver for Redis {
     fn databases(&self) -> Fut<Vec<String>> {
         self.schemas()
     }
+    /// "Size" per db index: the number of keys, from INFO keyspace —
+    /// one command for every index, no SELECT churn. Empty indexes
+    /// (no keyspace line) report nothing.
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let this = self.clone_handle();
+        Box::pin(async move {
+            let v = this
+                .command(this.default_db, vec!["INFO".into(), "keyspace".into()])
+                .await?;
+            let text = json_of(v).as_str().unwrap_or_default().to_string();
+            Ok(text
+                .lines()
+                .filter_map(|l| {
+                    let (db, rest) = l.split_once(':')?;
+                    if !db.starts_with("db") {
+                        return None;
+                    }
+                    let keys = rest
+                        .split(',')
+                        .find_map(|p| p.strip_prefix("keys="))?
+                        .parse()
+                        .ok()?;
+                    Some((db.to_string(), keys))
+                })
+                .collect())
+        })
+    }
     fn schemas(&self) -> Fut<Vec<String>> {
         let this = self.clone_handle();
         Box::pin(async move {

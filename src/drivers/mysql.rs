@@ -216,6 +216,27 @@ impl Driver for MySql {
         })
     }
 
+    /// Bytes per schema (database): data + indexes summed from
+    /// information_schema (InnoDB on-disk estimates).
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let r = rows(
+                &pool,
+                "SELECT TABLE_SCHEMA AS name, SUM(COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0)) AS b
+                   FROM information_schema.TABLES GROUP BY TABLE_SCHEMA",
+                10_000,
+            )
+            .await?;
+            Ok(r.iter()
+                .map(|r| {
+                    let b = r["b"].as_f64().map(|v| v.max(0.) as u64).unwrap_or(0);
+                    (r["name"].as_str().unwrap_or_default().to_string(), b)
+                })
+                .collect())
+        })
+    }
+
     fn objects(&self, schema: String) -> Fut<ObjectTree> {
         let pool = self.pool.clone();
         Box::pin(async move {

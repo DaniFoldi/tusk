@@ -65,6 +65,12 @@ pub trait Driver: Send + Sync + 'static {
     fn version(&self) -> Fut<String>;
     fn databases(&self) -> Fut<Vec<String>>;
     fn schemas(&self) -> Fut<Vec<String>>;
+    /// Size per database — bytes, or a count where bytes don't exist
+    /// (Redis / Valkey: keys per db index). The default is none; only
+    /// engines with a cheap catalog answer implement it.
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
     fn objects(&self, schema: String) -> Fut<ObjectTree>;
     /// Bytes on disk per table of a schema, for the sidebar. Only the
     /// engines with a cheap catalog answer implement it; the default is

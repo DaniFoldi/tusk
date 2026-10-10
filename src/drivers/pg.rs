@@ -141,6 +141,19 @@ impl Driver for Pg {
         })
     }
 
+    /// Bytes per database (pg_database_size) — native pg only.
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let pool = self.pool.clone();
+        let native = self.native();
+        fut(async move {
+            if native {
+                db::pg_fetch_database_sizes(&pool).await
+            } else {
+                Ok(Vec::new())
+            }
+        })
+    }
+
     /// Postgres / Greenplum: heap + toast + indexes per table. The
     /// pg-protocol trio (Redshift / Vertica / Cockroach) has no
     /// pg_total_relation_size — the trait default reports none.

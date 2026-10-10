@@ -256,6 +256,9 @@ pub struct TuskApp {
     /// Bytes per table (sidebar's muted size column), for the current
     /// schema and engines with a catalog answer. Missing name = no size.
     table_sizes: std::collections::HashMap<String, u64>,
+    /// Size per database for the dropdowns — bytes, or keys per index for
+    /// Redis / Valkey. Missing name = no chip.
+    database_sizes: std::collections::HashMap<String, u64>,
     objects_loading: bool,
     selected_object: Option<(TableKind, String)>,
     /// The active tab's table when `selected_object` was last synced to it:
@@ -382,6 +385,7 @@ impl TuskApp {
             current_schema: "public".to_string(),
             objects: ObjectTree::default(),
             table_sizes: Default::default(),
+            database_sizes: Default::default(),
             objects_loading: false,
             selected_object: None,
             synced_tab: None,
@@ -479,6 +483,27 @@ impl TuskApp {
         };
         let current_db = self.current_database();
         let dbs = self.databases.clone();
+        // Sizes for the dropdowns: bytes, or keys per index on Redis /
+        // Valkey — formatted once, kept by name.
+        let keys_format = matches!(
+            self.pool.as_ref().map(|p| p.engine()),
+            Some(crate::engine::Engine::Redis | crate::engine::Engine::Valkey)
+        );
+        let size_by_name: std::collections::HashMap<String, String> = self
+            .database_sizes
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    if keys_format {
+                        fmt_keys(*v)
+                    } else {
+                        fmt_bytes(*v)
+                    },
+                )
+            })
+            .collect();
+        let db_size = size_by_name.clone();
         // Long lists: the dropdown shows the recent ones (the current
         // database first) and a search entry — ⌘K opens the searchable
         // palette. Short lists just show everything.
@@ -516,14 +541,15 @@ impl TuskApp {
             for name in list {
                 let go = name.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(name.clone())
-                        .checked(*name == current_db)
-                        .on_click(move |_, window, cx| {
-                            let view = cx.global::<TuskHandle>().0.clone();
-                            view.update(cx, |this, cx| {
-                                this.switch_database(go.clone(), window, cx)
-                            });
-                        }),
+                    menu_item_with_size(
+                        name.clone(),
+                        db_size.get(name).cloned(),
+                        *name == current_db,
+                    )
+                    .on_click(move |_, window, cx| {
+                        let view = cx.global::<TuskHandle>().0.clone();
+                        view.update(cx, |this, cx| this.switch_database(go.clone(), window, cx));
+                    }),
                 );
             }
             menu
@@ -540,12 +566,15 @@ impl TuskApp {
             for name in &schemas {
                 let go = name.clone();
                 menu = menu.item(
-                    PopupMenuItem::new(name.clone())
-                        .checked(*name == current_schema)
-                        .on_click(move |_, _, cx| {
-                            let view = cx.global::<TuskHandle>().0.clone();
-                            view.update(cx, |this, cx| this.switch_schema(go.clone(), cx));
-                        }),
+                    menu_item_with_size(
+                        name.clone(),
+                        size_by_name.get(name).cloned(),
+                        *name == current_schema,
+                    )
+                    .on_click(move |_, _, cx| {
+                        let view = cx.global::<TuskHandle>().0.clone();
+                        view.update(cx, |this, cx| this.switch_schema(go.clone(), cx));
+                    }),
                 );
             }
             menu
@@ -2361,6 +2390,7 @@ impl TuskApp {
         this.active_conn = None;
         db::forget_last_connection();
         this.databases.clear();
+        this.database_sizes.clear();
         // Drop open tabs too, or the status bar keeps showing the last tab's
         // row count on the welcome screen.
         this.reset_workspace();
@@ -2426,8 +2456,14 @@ impl TuskApp {
         let list_pool = pool.clone();
         cx.spawn(async move |weak, cx: &mut AsyncApp| {
             let dbs = db::fetch_databases(&list_pool).await;
+            // Sizes are garnish (the dropdown's muted column): an engine
+            // without them — or a failure — just leaves it empty.
+            let sizes = db::fetch_database_sizes(&list_pool)
+                .await
+                .unwrap_or_default();
             let _ = weak.update(cx, |this: &mut TuskApp, cx| {
                 this.databases = dbs.unwrap_or_default();
+                this.database_sizes = sizes.into_iter().collect();
                 cx.notify();
             });
         })
@@ -4423,6 +4459,45 @@ fn fmt_int(n: i64) -> String {
         out.push(ch);
     }
     if n < 0 { format!("-{out}") } else { out }
+}
+
+/// Redis / Valkey db index "size": the number of keys in it.
+pub(crate) fn fmt_keys(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M keys", n as f64 / 1_000_000.)
+    } else if n >= 1_000 {
+        format!("{:.1}K keys", n as f64 / 1_000.)
+    } else {
+        format!("{n} keys")
+    }
+}
+
+/// A database / schema dropdown item: the name, plus a muted right-aligned
+/// size chip when the engine reports one. The checked ✓ stays at the far
+/// right (ElementItem keeps that slot), so the chip sits just before it.
+fn menu_item_with_size(name: String, size: Option<String>, checked: bool) -> PopupMenuItem {
+    let Some(size) = size else {
+        return PopupMenuItem::new(name).checked(checked);
+    };
+    PopupMenuItem::element(move |_, cx| {
+        let muted = cx.theme().muted_foreground;
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .text_sm()
+            .font_family(crate::settings::ui_font())
+            .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+            .child(
+                div()
+                    .text_caption()
+                    .text_size(px((crate::settings::ui_text() - 1.).max(8.)))
+                    .font_family(crate::settings::ui_font())
+                    .text_color(muted)
+                    .child(size.clone()),
+            )
+    })
+    .checked(checked)
 }
 
 /// 0 B / 512 B / 34.5 KB / 7.2 MB / 1.1 GB / 3 TB — the sidebar's size

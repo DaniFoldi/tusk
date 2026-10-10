@@ -184,6 +184,25 @@ impl Driver for MsSql {
         );
         Box::pin(async move { Ok(f.await?.iter().map(|r| s(&r["name"])).collect()) })
     }
+    /// Bytes per database: every file's size in sys.master_files (8 KB
+    /// pages × count) — data + logs, the files the server holds open.
+    fn database_sizes(&self) -> Fut<Vec<(String, u64)>> {
+        let f = self.rows(
+            "SELECT DB_NAME(database_id) AS n, SUM(CAST(size AS BIGINT)) * 8192 AS b
+               FROM sys.master_files GROUP BY database_id ORDER BY n"
+                .into(),
+            10_000,
+        );
+        Box::pin(async move {
+            Ok(f.await?
+                .iter()
+                .map(|r| {
+                    let b = r["b"].as_f64().map(|v| v.max(0.) as u64).unwrap_or(0);
+                    (s(&r["n"]), b)
+                })
+                .collect())
+        })
+    }
     fn schemas(&self) -> Fut<Vec<String>> {
         let f = self.rows(
             "SELECT name FROM sys.schemas
