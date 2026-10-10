@@ -1881,6 +1881,44 @@ pub async fn fetch_objects(db: &Db, schema: &str) -> DbResult<ObjectTree> {
     db.driver().objects(schema.to_string()).await
 }
 
+/// Bytes on disk per table of a schema (the sidebar's muted size column):
+/// filled by the engines with a cheap catalog answer, empty elsewhere.
+pub async fn fetch_table_sizes(db: &Db, schema: &str) -> DbResult<Vec<(String, u64)>> {
+    db.driver().table_sizes(schema.to_string()).await
+}
+
+/// Postgres / Greenplum: heap + toast + indexes (pg_total_relation_size),
+/// ordinary and partitioned tables of one schema.
+pub(crate) async fn pg_fetch_table_sizes(
+    pool: &sqlx::PgPool,
+    schema: &str,
+) -> DbResult<Vec<(String, u64)>> {
+    let pool = pool.clone();
+    let schema = schema.to_string();
+    run_logged(
+        format!("-- table sizes: {schema}"),
+        crate::console::Source::Meta,
+        async move {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT c.relname::text, pg_total_relation_size(c.oid)::bigint
+                   FROM pg_class c
+                   JOIN pg_namespace n ON n.oid = c.relnamespace
+                  WHERE n.nspname = $1 AND c.relkind IN ('r', 'p')
+                  ORDER BY c.relname",
+            )
+            .bind(&schema)
+            .fetch_all(&pool)
+            .await
+            .map_err(pg_error_message)?;
+            Ok(rows
+                .into_iter()
+                .map(|(name, bytes)| (name, bytes.max(0) as u64))
+                .collect())
+        },
+    )
+    .await
+}
+
 #[cfg(test)]
 mod statement_tests {
     use super::{is_destructive, is_write, statement_at};
@@ -2229,6 +2267,25 @@ mod tests {
                 Ok::<_, String>(())
             })
             .expect("cleanup");
+    }
+
+    /// pg_fetch_table_sizes: every ordinary table of a schema with its
+    /// heap+toast+index bytes (the sidebar's size column).
+    #[test]
+    fn fetch_table_sizes_lists_seed_tables() {
+        let pool = pool_for_tests();
+        let sizes = RUNTIME
+            .handle()
+            .block_on(pg_fetch_table_sizes(&pool, "public"))
+            .expect("sizes");
+        let names: Vec<&str> = sizes.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"customers"),
+            "public.customers missing: {names:?}"
+        );
+        for (name, bytes) in &sizes {
+            assert!(*bytes > 0, "{name} reported {bytes} bytes");
+        }
     }
 
     #[test]

@@ -228,6 +228,31 @@ impl Driver for MsSql {
             Ok(tree)
         })
     }
+
+    /// Reserved pages × 8 KB per table (heap + indexes), rowstore figures.
+    fn table_sizes(&self, schema: String) -> Fut<Vec<(String, u64)>> {
+        let f = self.rows(
+            format!(
+                "SELECT t.name AS n, COALESCE(SUM(CAST(ps.reserved_page_count AS BIGINT)), 0) * 8192 AS b
+                   FROM sys.tables t
+                   JOIN sys.schemas sch ON sch.schema_id = t.schema_id
+                   LEFT JOIN sys.dm_db_partition_stats ps ON ps.object_id = t.object_id
+                  WHERE sch.name = {}
+                  GROUP BY t.name ORDER BY t.name",
+                D.literal(&schema)
+            ),
+            100_000,
+        );
+        Box::pin(async move {
+            Ok(f.await?
+                .iter()
+                .map(|r| {
+                    let b = r["b"].as_f64().map(|v| v.max(0.) as u64).unwrap_or(0);
+                    (s(&r["n"]), b)
+                })
+                .collect())
+        })
+    }
     fn columns(&self, schema: String, table: String) -> Fut<Vec<GridColumnMeta>> {
         let f = self.rows(
             format!(

@@ -253,6 +253,9 @@ pub struct TuskApp {
     schemas: Vec<String>,
     current_schema: String,
     objects: ObjectTree,
+    /// Bytes per table (sidebar's muted size column), for the current
+    /// schema and engines with a catalog answer. Missing name = no size.
+    table_sizes: std::collections::HashMap<String, u64>,
     objects_loading: bool,
     selected_object: Option<(TableKind, String)>,
     /// The active tab's table when `selected_object` was last synced to it:
@@ -378,6 +381,7 @@ impl TuskApp {
             schemas: Vec::new(),
             current_schema: "public".to_string(),
             objects: ObjectTree::default(),
+            table_sizes: Default::default(),
             objects_loading: false,
             selected_object: None,
             synced_tab: None,
@@ -1045,15 +1049,22 @@ impl TuskApp {
             c.set_schema(&schema);
         }
         self.objects_loading = true;
+        self.table_sizes.clear();
         cx.notify();
         cx.spawn(async move |weak, cx: &mut AsyncApp| {
             let result = db::fetch_objects(&pool, &schema).await;
+            // Sizes are garnish: an engine without them (or a failure)
+            // just leaves the column empty.
+            let sizes = db::fetch_table_sizes(&pool, &schema)
+                .await
+                .unwrap_or_default();
             let _ = weak.update(cx, |this: &mut TuskApp, cx| {
                 this.objects_loading = false;
                 match result {
                     Ok(tree) => {
                         let counts = tree.tables.len() + tree.views.len() + tree.matviews.len();
                         this.objects = tree;
+                        this.table_sizes = sizes.into_iter().collect();
                         this.reload_obj_groups();
                         this.refresh_quick_open_tables();
                         let _ = counts;
@@ -3119,6 +3130,12 @@ impl TuskApp {
         let icon = kind.icon();
         let name = name.to_string();
         let row_id = format!("obj-row-{}-{}", kind.label(), name);
+        // Storage size for tables, when the engine reports it: muted, at
+        // the row's right edge. Anything else (views, functions, engines
+        // without a catalog answer) shows nothing.
+        let size = (kind == TableKind::Table)
+            .then(|| self.table_sizes.get(&name).copied())
+            .flatten();
         let label: AnyElement = match editing {
             // Same text size as the label it replaces, full row width, so the
             // row doesn't shrink while renaming.
@@ -3134,6 +3151,7 @@ impl TuskApp {
                 )
                 .into_any_element(),
             None => div()
+                .when(size.is_some(), |this| this.flex_1().min_w_0())
                 .text_size(px(crate::settings::ui_text()))
                 .font_family(crate::settings::ui_font())
                 .text_color(if selected || dropping || renamed.is_some() {
@@ -3167,6 +3185,18 @@ impl TuskApp {
             .hover(|this| this.bg(muted.opacity(0.08)))
             .child(icon)
             .child(label)
+            .when_some(size, |this, bytes| {
+                this.child(
+                    div()
+                        .ml_auto()
+                        .pl_2()
+                        .text_caption()
+                        .text_size(px((crate::settings::ui_text() - 1.).max(8.)))
+                        .font_family(crate::settings::ui_font())
+                        .text_color(muted)
+                        .child(fmt_bytes(bytes)),
+                )
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.sidebar_focus.focus(window, cx);
                 this.on_pick_object(kind_c.clone(), name_c.clone(), window, cx);
@@ -4393,4 +4423,26 @@ fn fmt_int(n: i64) -> String {
         out.push(ch);
     }
     if n < 0 { format!("-{out}") } else { out }
+}
+
+/// 0 B / 512 B / 34.5 KB / 7.2 MB / 1.1 GB / 3 TB — the sidebar's size
+/// column, one decimal past the unit boundary.
+pub(crate) fn fmt_bytes(b: u64) -> String {
+    const KB: f64 = 1024.;
+    const MB: f64 = KB * 1024.;
+    const GB: f64 = MB * 1024.;
+    const TB: f64 = GB * 1024.;
+    let v = b as f64;
+    let (n, unit) = if v >= TB {
+        (v / TB, "TB")
+    } else if v >= GB {
+        (v / GB, "GB")
+    } else if v >= MB {
+        (v / MB, "MB")
+    } else if v >= KB {
+        (v / KB, "KB")
+    } else {
+        return format!("{b} B");
+    };
+    format!("{n:.1} {unit}")
 }

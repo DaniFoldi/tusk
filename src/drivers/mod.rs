@@ -66,6 +66,12 @@ pub trait Driver: Send + Sync + 'static {
     fn databases(&self) -> Fut<Vec<String>>;
     fn schemas(&self) -> Fut<Vec<String>>;
     fn objects(&self, schema: String) -> Fut<ObjectTree>;
+    /// Bytes on disk per table of a schema, for the sidebar. Only the
+    /// engines with a cheap catalog answer implement it; the default is
+    /// none.
+    fn table_sizes(&self, _schema: String) -> Fut<Vec<(String, u64)>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
     fn columns(&self, schema: String, table: String) -> Fut<Vec<GridColumnMeta>>;
     fn count(&self, schema: String, table: String, filter: Option<WhereClause>) -> Fut<i64>;
     fn window(&self, req: WindowReq) -> Fut<Vec<Value>>;

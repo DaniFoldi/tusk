@@ -141,6 +141,21 @@ impl Driver for Pg {
         })
     }
 
+    /// Postgres / Greenplum: heap + toast + indexes per table. The
+    /// pg-protocol trio (Redshift / Vertica / Cockroach) has no
+    /// pg_total_relation_size — the trait default reports none.
+    fn table_sizes(&self, schema: String) -> Fut<Vec<(String, u64)>> {
+        let pool = self.pool.clone();
+        let native = self.native();
+        fut(async move {
+            if native {
+                db::pg_fetch_table_sizes(&pool, &schema).await
+            } else {
+                Ok(Vec::new())
+            }
+        })
+    }
+
     fn columns(&self, schema: String, table: String) -> Fut<Vec<GridColumnMeta>> {
         let pool = self.pool.clone();
         if self.native() {

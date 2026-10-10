@@ -257,6 +257,32 @@ impl Driver for MySql {
         })
     }
 
+    /// InnoDB / MyISAM table bytes: data + indexes from information_schema
+    /// (DATA_LENGTH is the on-disk figure, an estimate on InnoDB).
+    fn table_sizes(&self, schema: String) -> Fut<Vec<(String, u64)>> {
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let r = rows(
+                &pool,
+                &format!(
+                    "SELECT TABLE_NAME AS name, (DATA_LENGTH + INDEX_LENGTH) AS b
+                       FROM information_schema.TABLES
+                      WHERE TABLE_SCHEMA = {} AND TABLE_TYPE = 'BASE TABLE'
+                      ORDER BY TABLE_NAME",
+                    lit(&schema)
+                ),
+                100_000,
+            )
+            .await?;
+            Ok(r.iter()
+                .map(|r| {
+                    let b = r["b"].as_f64().map(|v| v.max(0.) as u64).unwrap_or(0);
+                    (r["name"].as_str().unwrap_or_default().to_string(), b)
+                })
+                .collect())
+        })
+    }
+
     fn columns(&self, schema: String, table: String) -> Fut<Vec<GridColumnMeta>> {
         let pool = self.pool.clone();
         Box::pin(async move {

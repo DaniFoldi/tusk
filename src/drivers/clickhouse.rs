@@ -202,6 +202,34 @@ impl Driver for ClickHouse {
             Ok(tree)
         })
     }
+
+    /// On-disk bytes per table (system.tables.total_bytes): real for the
+    /// MergeTree family, 0 for Memory / Log / views.
+    fn table_sizes(&self, schema: String) -> Fut<Vec<(String, u64)>> {
+        let f = self.rows(
+            format!(
+                "SELECT name, total_bytes FROM system.tables
+                  WHERE database = {} AND engine NOT IN ('View', 'MaterializedView')
+                  ORDER BY name",
+                D.literal(&schema)
+            ),
+            100_000,
+        );
+        Box::pin(async move {
+            Ok(f.await?
+                .iter()
+                .map(|r| {
+                    (
+                        s(&r["name"]),
+                        r["total_bytes"]
+                            .as_f64()
+                            .map(|v| if v.is_finite() && v > 0. { v as u64 } else { 0 })
+                            .unwrap_or(0),
+                    )
+                })
+                .collect())
+        })
+    }
     fn columns(&self, schema: String, table: String) -> Fut<Vec<GridColumnMeta>> {
         let f = self.rows(
             format!(
