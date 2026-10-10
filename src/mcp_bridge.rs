@@ -345,8 +345,20 @@ pub fn agent_may_run(
                 );
             }
             let body = sql.to_ascii_uppercase();
-            const WRITES: [&str; 6] = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "PRAGMA"];
-            if WRITES.iter().any(|w| body.contains(w)) {
+            // Word-boundary scan, so `OFFSET` is not `SET` and `POINT` is
+            // not `INTO`; SET / SET_CONFIG close the GUC escape (a RO
+            // transaction is the real gate — this is the backstop).
+            const WRITES: [&str; 8] = [
+                "INSERT",
+                "UPDATE",
+                "DELETE",
+                "MERGE",
+                "INTO",
+                "PRAGMA",
+                "SET",
+                "SET_CONFIG",
+            ];
+            if WRITES.iter().any(|w| has_word(&body, w)) {
                 return Err(
                     "Read-only mode refuses this statement: it writes or changes settings. \
                      Use open_sql_tab for the rest."
@@ -357,6 +369,21 @@ pub fn agent_may_run(
         }
         AgentRun::All => Ok(()),
     }
+}
+
+/// `hay` (already uppercased) contains `word` (ASCII) as a whole word —
+/// `OFFSET` is not `SET`, `CURRENT_SETTING` is not `SETTING`. A word
+/// glued to non-ASCII letters (caféSET) counts as a match: refusing more
+/// is safe, refusing less isn't.
+fn has_word(hay: &str, word: &str) -> bool {
+    let hay = hay.as_bytes();
+    let word = word.as_bytes();
+    let boundary = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    hay.windows(word.len()).enumerate().any(|(i, w)| {
+        w == word
+            && (i == 0 || !boundary(hay[i - 1]))
+            && (i + word.len() >= hay.len() || !boundary(hay[i + word.len()]))
+    })
 }
 
 /// The MCP stdio loop, relaying each tool call to the app behind `resolve`.
@@ -526,6 +553,27 @@ mod tests {
             .is_err()
         );
         assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT * INTO tmp FROM users").is_err());
+        // …the GUC escape: flipping read-only settings from inside a SELECT.
+        assert!(
+            super::agent_may_run(
+                R::ReadOnly,
+                pg,
+                "SELECT set_config('default_transaction_read_only', 'off', false)"
+            )
+            .is_err()
+        );
+        // Word boundaries: OFFSET ≠ SET, CURRENT_SETTING ≠ SET, a table
+        // named `settings` is fine — but a CTE named `set` is refused.
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT * FROM t OFFSET 10").is_ok());
+        assert!(
+            super::agent_may_run(R::ReadOnly, pg, "SELECT current_setting('work_mem') AS m")
+                .is_ok()
+        );
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT * FROM settings").is_ok());
+        assert!(
+            super::agent_may_run(R::ReadOnly, pg, "WITH set AS (SELECT 1) SELECT * FROM set")
+                .is_err()
+        );
         // …multi-statement smuggling (the trailing `;` is fine)…
         assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT 1; DROP TABLE users").is_err());
         assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT 1;").is_ok());

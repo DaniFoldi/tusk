@@ -85,7 +85,7 @@ Tusk talks to agents over the [Agent Client Protocol](https://agentclientprotoco
 >
 > On macOS with the installed app, the binary is `/Applications/Tusk.app/Contents/MacOS/tusk`. `tusk mcp` finds the running Tusk on its own (the newest window first, and it follows restarts); with Tusk closed, a tool call just answers "start Tusk first".
 >
-> The six tools read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — by default nothing runs. Want the agent to see rows too? Settings → AI → **Agents Can Run Queries**: *Read-only* lets `run_sql` execute single SELECT-type statements and return the rows as TSV; *All* runs anything. Everything an agent runs lands in the console and History.
+> The six tools read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — by default nothing runs. Want the agent to see rows too? Settings → AI → **Agents Can Run Queries**: *Read-only* lets `run_sql` execute single SELECT-type statements and return the rows as TSV; *All* runs anything. Read-only is enforced by the server where the protocol has one — Postgres and MySQL family connections run the statement inside a `READ ONLY` transaction, so even a write hidden behind a function body is refused. Everything an agent runs lands in the console and History.
 
 > [!NOTE]
 > The agent runs on your machine through the CLI you choose, under that CLI's own account and settings. Tusk doesn't send your data anywhere itself.

@@ -133,6 +133,40 @@ async fn rows(pool: &sqlx::MySqlPool, sql: &str, limit: i64) -> DbResult<Vec<Val
     .await
 }
 
+/// The agent path (run_sql, Read-only mode): the statement runs inside a
+/// READ ONLY transaction (`SET TRANSACTION READ ONLY`), so the server
+/// refuses writes even if one slips past the statement classifier. If
+/// the server doesn't take the mode, the query doesn't run.
+async fn rows_readonly(pool: &sqlx::MySqlPool, sql: &str, limit: i64) -> DbResult<Vec<Value>> {
+    use futures::TryStreamExt as _;
+    use sqlx::{Column as _, Row as _};
+    let pool = pool.clone();
+    let sql = super::trim_sql(sql);
+    db::run_logged(sql.clone(), crate::console::Source::Data, async move {
+        let mut tx = pool.begin().await.map_err(err)?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(err)?;
+        let mut out = Vec::new();
+        {
+            let mut stream = sqlx::raw_sql(&sql).fetch(&mut *tx);
+            while let Some(row) = stream.try_next().await.map_err(err)? {
+                let names: Vec<String> =
+                    row.columns().iter().map(|c| c.name().to_string()).collect();
+                let vals = (0..names.len()).map(|i| value(&row, i)).collect();
+                out.extend(super::objects_from(&names, vec![vals]));
+                if out.len() as i64 >= limit {
+                    break;
+                }
+            }
+        }
+        tx.commit().await.map_err(err)?;
+        Ok(out)
+    })
+    .await
+}
+
 fn where_sql(filter: &Option<WhereClause>) -> String {
     match filter {
         Some(w) if !w.sql.is_empty() => format!("WHERE {}", w.sql),
@@ -322,6 +356,12 @@ impl Driver for MySql {
     fn query_rows(&self, sql: String, limit: i64) -> Fut<Vec<Value>> {
         let pool = self.pool.clone();
         Box::pin(async move { rows(&pool, &sql, limit).await })
+    }
+
+    /// MySQL / MariaDB: server-enforced READ ONLY transaction.
+    fn query_rows_readonly(&self, sql: String, limit: i64) -> Fut<Vec<Value>> {
+        let pool = self.pool.clone();
+        Box::pin(async move { rows_readonly(&pool, &sql, limit).await })
     }
 
     fn query_columns(&self, sql: String) -> Fut<Vec<String>> {

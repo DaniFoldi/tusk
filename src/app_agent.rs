@@ -807,16 +807,16 @@ impl TuskApp {
                     let _ = reply.send(Err("Not connected, or no `sql` given.".into()));
                     return;
                 };
+                let mode = crate::settings::get().agent_run();
                 // What the settings let this run — Never refuses, Read-only
                 // passes single SELECT-type statements, All runs anything.
-                if let Err(e) = crate::mcp_bridge::agent_may_run(
-                    crate::settings::get().agent_run(),
-                    pool.engine(),
-                    &sql,
-                ) {
+                if let Err(e) = crate::mcp_bridge::agent_may_run(mode, pool.engine(), &sql) {
                     let _ = reply.send(Err(e));
                     return;
                 }
+                // Read-only runs on the server-enforced path: a READ ONLY
+                // transaction where the protocol has one (pg / MySQL family).
+                let server_readonly = mode == crate::settings::AgentRun::ReadOnly;
                 let limit = arg("limit")
                     .and_then(|l| l.parse::<i64>().ok())
                     .unwrap_or(100)
@@ -850,7 +850,11 @@ impl TuskApp {
                         let _ = reply.send(out.map_err(|e| e.to_string()));
                         return;
                     }
-                    let out = crate::db::run_query_rows(&pool, &sql, limit + 1).await;
+                    let out = if server_readonly {
+                        crate::db::run_query_rows_readonly(&pool, &sql, limit + 1).await
+                    } else {
+                        crate::db::run_query_rows(&pool, &sql, limit + 1).await
+                    };
                     let out = match out {
                         Ok(rows) => {
                             hist(&sql, true);

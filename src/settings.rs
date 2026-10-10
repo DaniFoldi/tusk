@@ -1015,7 +1015,10 @@ impl SettingsWindow {
                         .description(
                             "What AI agents (the AI panel, tusk mcp clients) may run without asking. \
                              Never: they draft SQL into tabs — you run it. Read-only: single SELECT-type \
-                             statements run, rows go back to the agent. All: anything runs, including writes.",
+                             statements run, rows go back to the agent — on Postgres and MySQL family \
+                             servers the query runs inside a server-enforced READ ONLY transaction, so \
+                             even writes hidden behind a function are refused. All: anything runs, \
+                             including writes.",
                         ),
                     ),
             );

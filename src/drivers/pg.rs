@@ -207,6 +207,23 @@ impl Driver for Pg {
         })
     }
 
+    /// Postgres / Greenplum: the statement runs in a server-enforced
+    /// READ ONLY transaction (SET TRANSACTION READ ONLY), so a write
+    /// hiding behind a SELECT-shaped function body is refused by the
+    /// server itself. Redshift / Vertica / Cockroach keep the plain path:
+    /// their servers don't take the mode, so the classifier stays the gate.
+    fn query_rows_readonly(&self, sql: String, limit: i64) -> Fut<Vec<Value>> {
+        let pool = self.pool.clone();
+        let native = self.native();
+        fut(async move {
+            if native {
+                db::pg_run_query_rows_readonly(&pool, &sql, limit).await
+            } else {
+                text_rows(&pool, &sql, limit).await
+            }
+        })
+    }
+
     fn query_columns(&self, sql: String) -> Fut<Vec<String>> {
         let pool = self.pool.clone();
         fut(async move { db::pg_run_query_columns(&pool, &sql).await })

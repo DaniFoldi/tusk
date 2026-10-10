@@ -885,6 +885,36 @@ pub(crate) async fn pg_run_query_rows(
     .await
 }
 
+/// The agent path ([`crate::mcp_bridge`] run_sql, Read-only mode): the
+/// statement runs inside an explicit READ ONLY transaction, so the SERVER
+/// is the gate — a write hidden behind a SELECT-shaped function body is
+/// refused with "cannot execute … in a read-only transaction", which no
+/// amount of string analysis upstream could have seen. If the server
+/// rejects the mode itself, the query doesn't run.
+pub(crate) async fn pg_run_query_rows_readonly(
+    pool: &sqlx::PgPool,
+    sql: &str,
+    limit: i64,
+) -> DbResult<Vec<serde_json::Value>> {
+    let pool = pool.clone();
+    let inner = sql.trim().trim_end_matches(';').to_string();
+    let wrapped = format!("SELECT row_to_json(t) FROM ({inner}) t LIMIT {limit}");
+    run_logged(inner.clone(), crate::console::Source::Data, async move {
+        let mut tx = pool.begin().await.map_err(pg_error_message)?;
+        sqlx::query("SET TRANSACTION READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(pg_error_message)?;
+        let rows: Vec<serde_json::Value> = sqlx::query_scalar(&wrapped)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(pg_error_message)?;
+        tx.commit().await.map_err(pg_error_message)?;
+        Ok(rows)
+    })
+    .await
+}
+
 /// Where an editable query result came from: one base table whose primary
 /// key is fully present in the result. `columns[i]` is the table column
 /// behind result column `i` (None for expressions / other tables).
@@ -1739,6 +1769,19 @@ pub async fn run_query_rows(db: &Db, sql: &str, limit: i64) -> DbResult<Vec<serd
     db.driver().query_rows(sql.to_string(), limit).await
 }
 
+/// Rows over the engine's read-only path: a server-enforced READ ONLY
+/// transaction where the protocol has one (Postgres family, MySQL family),
+/// the plain path where it doesn't (see the Driver trait default).
+pub async fn run_query_rows_readonly(
+    db: &Db,
+    sql: &str,
+    limit: i64,
+) -> DbResult<Vec<serde_json::Value>> {
+    db.driver()
+        .query_rows_readonly(sql.to_string(), limit)
+        .await
+}
+
 pub async fn result_edit_source(
     db: &Db,
     sql: &str,
@@ -2126,6 +2169,66 @@ mod tests {
             err.contains("42601") || err.to_lowercase().contains("syntax"),
             "got: {err}"
         );
+    }
+
+    /// Read-only mode's server enforcement (run_sql): the statement runs in
+    /// an explicit READ ONLY transaction, so Postgres itself refuses writes —
+    /// including one hidden behind a SELECT-shaped function body, the case
+    /// no string analysis can catch. The gate is bypassed here on purpose:
+    /// this proves the layer below it.
+    #[test]
+    fn readonly_transaction_is_server_enforced() {
+        let pool = pool_for_tests();
+        RUNTIME
+            .handle()
+            .block_on(async {
+                pg_run_exec(&pool, "CREATE TABLE tusk_ro_probe (a INT)").await?;
+                pg_run_exec(
+                    &pool,
+                    "CREATE OR REPLACE FUNCTION tusk_ro_probe() RETURNS void AS $$ \
+                     BEGIN DELETE FROM tusk_ro_probe WHERE false; END \
+                     $$ LANGUAGE plpgsql",
+                )
+                .await?;
+                Ok::<_, String>(())
+            })
+            .expect("setup");
+
+        // Reads pass inside the read-only transaction…
+        let rows = RUNTIME
+            .handle()
+            .block_on(pg_run_query_rows_readonly(&pool, "SELECT 1 AS one", 10))
+            .expect("ro select");
+        assert_eq!(rows.len(), 1);
+        // …plain writes are refused by the transaction mode itself…
+        let err = RUNTIME
+            .handle()
+            .block_on(pg_run_query_rows_readonly(
+                &pool,
+                "UPDATE tusk_ro_probe SET a = 1",
+                10,
+            ))
+            .expect_err("a write in a read-only transaction must fail");
+        assert!(err.to_lowercase().contains("read-only"), "got: {err}");
+        // …and so is a write hidden behind a function body.
+        let err = RUNTIME
+            .handle()
+            .block_on(pg_run_query_rows_readonly(
+                &pool,
+                "SELECT tusk_ro_probe()",
+                10,
+            ))
+            .expect_err("a function-hidden write must fail too");
+        assert!(err.to_lowercase().contains("read-only"), "got: {err}");
+
+        RUNTIME
+            .handle()
+            .block_on(async {
+                pg_run_exec(&pool, "DROP TABLE tusk_ro_probe").await?;
+                pg_run_exec(&pool, "DROP FUNCTION tusk_ro_probe()").await?;
+                Ok::<_, String>(())
+            })
+            .expect("cleanup");
     }
 
     #[test]

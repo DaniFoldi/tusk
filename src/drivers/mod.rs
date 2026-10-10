@@ -71,6 +71,13 @@ pub trait Driver: Send + Sync + 'static {
     fn window(&self, req: WindowReq) -> Fut<Vec<Value>>;
     /// A statement that returns rows, capped at `limit`.
     fn query_rows(&self, sql: String, limit: i64) -> Fut<Vec<Value>>;
+    /// The agent path (run_sql in Read-only mode): a server-enforced
+    /// READ ONLY transaction where the protocol has one. The default is
+    /// the plain path — for those engines the statement classifier stays
+    /// the only gate (see mcp_bridge::agent_may_run).
+    fn query_rows_readonly(&self, sql: String, limit: i64) -> Fut<Vec<Value>> {
+        self.query_rows(sql, limit)
+    }
     /// Column names of a statement's result (for empty results).
     fn query_columns(&self, sql: String) -> Fut<Vec<String>>;
     /// A statement without rows: affected count.
