@@ -24,7 +24,7 @@ on [GPUI](https://github.com/zed-industries/zed), the GPU-accelerated UI framewo
 - **Native and fast.** No Electron and no web view. Tables with millions of rows scroll smoothly because the grid is virtualized and GPU-rendered.
 - **One app for 20 databases.** PostgreSQL, MySQL, SQLite, SQL Server, Oracle, ClickHouse, Snowflake, BigQuery, Redis, MongoDB and more.
 - **Keyboard first.** Everything is in the command palette (<kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd>), and the common actions have shortcuts.
-- **AI that doesn't take the wheel.** Ask about your data in plain English. The agent reads your schema and writes a query into a new tab. It never runs SQL on its own.
+- **AI that doesn't take the wheel.** Ask about your data in plain English. The agent reads your schema and writes a query into a new tab. By default it never runs SQL on its own — you can let it run read-only queries in settings.
 - **Your credentials stay yours.** Passwords are stored in the macOS Keychain, Windows Credential Manager or Linux Secret Service. There's no account and no telemetry.
 
 ## Features
@@ -72,7 +72,7 @@ Edit columns, types, defaults, nullability, comments and indexes right in the gr
 
 <img src="docs/screenshots/ai-panel.png" alt="AI panel writing a query" width="100%">
 
-Open the AI panel with <kbd>⌘</kbd><kbd>L</kbd> and ask a question. The agent reads the structure of the tables it needs, writes a query into a new tab, and explains its assumptions. **You review it and run it.** Tusk doesn't let the agent execute SQL.
+Open the AI panel with <kbd>⌘</kbd><kbd>L</kbd> and ask a question. The agent reads the structure of the tables it needs, writes a query into a new tab, and explains its assumptions. **You review it and run it.** Agents can't execute SQL by default; Settings → AI can let them run read-only queries, with the rows returned to them and every run recorded in the console and History.
 
 Tusk talks to agents over the [Agent Client Protocol](https://agentclientprotocol.com), so you can use Claude, Codex or Gemini CLI, or add your own. The agents reach your open connection through Tusk's built-in MCP server.
 
@@ -83,7 +83,9 @@ Tusk talks to agents over the [Agent Client Protocol](https://agentclientprotoco
 > { "mcpServers": { "tusk": { "command": "/path/to/tusk", "args": ["mcp"] } } }
 > ```
 >
-> On macOS with the installed app, the binary is `/Applications/Tusk.app/Contents/MacOS/tusk`. `tusk mcp` finds the running Tusk on its own (the newest window first, and it follows restarts); with Tusk closed, a tool call just answers "start Tusk first". The six tools are the same ones the built-in agents get: read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — they never run SQL.
+> On macOS with the installed app, the binary is `/Applications/Tusk.app/Contents/MacOS/tusk`. `tusk mcp` finds the running Tusk on its own (the newest window first, and it follows restarts); with Tusk closed, a tool call just answers "start Tusk first".
+>
+> The six tools read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — by default nothing runs. Want the agent to see rows too? Settings → AI → **Agents Can Run Queries**: *Read-only* lets `run_sql` execute single SELECT-type statements and return the rows as TSV; *All* runs anything. Everything an agent runs lands in the console and History.
 
 > [!NOTE]
 > The agent runs on your machine through the CLI you choose, under that CLI's own account and settings. Tusk doesn't send your data anywhere itself.

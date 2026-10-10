@@ -145,6 +145,10 @@ pub struct Prefs {
     /// to new chats: agent id → option id → value.
     pub agent_config:
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, serde_json::Value>>,
+    /// Whether MCP tools may run SQL (AI panel agents, `tusk mcp` clients):
+    /// see [`AGENT_RUNS`]. Default Never — agents draft SQL in tabs; the
+    /// user runs it.
+    pub agent_runs_queries: String,
 }
 
 pub const FILTER_COLUMN_SORTS: [&str; 2] = ["Table order", "Alphabetical"];
@@ -153,6 +157,29 @@ pub const TABLE_SORTS: [&str; 3] = ["Primary key ascending", "Primary key descen
 /// Sidebar layouts: the connected database's objects only, or every saved
 /// connection (grouped) with the connected one's objects nested under it.
 pub const SIDEBAR_LAYOUTS: [&str; 2] = ["Objects", "Connections tree"];
+/// What agents (the AI panel, `tusk mcp` clients) may run: Never — they
+/// draft SQL into tabs and the user runs it; Read-only — single SELECT-type
+/// statements run and the rows come back to the agent; All — anything runs,
+/// including writes.
+pub const AGENT_RUNS: [&str; 3] = ["Never", "Read-only", "All"];
+
+/// [`Prefs::agent_runs_queries`] as a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentRun {
+    Never,
+    ReadOnly,
+    All,
+}
+
+impl AgentRun {
+    pub fn from_label(s: &str) -> AgentRun {
+        match s {
+            "Read-only" => AgentRun::ReadOnly,
+            "All" => AgentRun::All,
+            _ => AgentRun::Never,
+        }
+    }
+}
 
 /// Accent choices (dark, light variant).
 pub const ACCENTS: &[(&str, u32, u32)] = &[
@@ -202,7 +229,15 @@ impl Default for Prefs {
             agent: "claude-acp".into(),
             agent_servers: Default::default(),
             agent_config: Default::default(),
+            agent_runs_queries: AGENT_RUNS[0].into(),
         }
+    }
+}
+
+impl Prefs {
+    /// [`Prefs::agent_runs_queries`] as a value.
+    pub fn agent_run(&self) -> AgentRun {
+        AgentRun::from_label(&self.agent_runs_queries)
     }
 }
 
@@ -238,6 +273,9 @@ impl Prefs {
         if !SIDEBAR_LAYOUTS.contains(&self.sidebar_layout.as_str()) {
             self.sidebar_layout = d.sidebar_layout.clone();
         }
+        if !AGENT_RUNS.contains(&self.agent_runs_queries.as_str()) {
+            self.agent_runs_queries = d.agent_runs_queries.clone();
+        }
         self.editor_tab_size = self.editor_tab_size.clamp(1, 8);
         self.query_timeout_secs = self.query_timeout_secs.min(86_400);
         if self.gpu_device.len() != 4 || !self.gpu_device.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -256,7 +294,7 @@ impl Prefs {
 
 #[cfg(test)]
 mod tests {
-    use super::{Prefs, SIDEBAR_LAYOUTS};
+    use super::{AGENT_RUNS, Prefs, SIDEBAR_LAYOUTS};
 
     #[test]
     fn gpu_preference_accepts_only_pci_device_ids() {
@@ -281,6 +319,19 @@ mod tests {
         let p = p.sanitized();
         assert_eq!(p.sidebar_layout, SIDEBAR_LAYOUTS[1]);
         assert_eq!(p.sidebar_collapsed_groups, ["Acme"]);
+    }
+
+    #[test]
+    fn agent_runs_queries_defaults_to_never_and_rejects_unknown() {
+        assert_eq!(Prefs::default().agent_run(), super::AgentRun::Never);
+        let p: Prefs = serde_json::from_str(r#"{"agent_runs_queries": "Everything"}"#).unwrap();
+        assert_eq!(p.sanitized().agent_run(), super::AgentRun::Never);
+        let p: Prefs = serde_json::from_str(r#"{"agent_runs_queries": "Read-only"}"#).unwrap();
+        assert_eq!(p.sanitized().agent_run(), super::AgentRun::ReadOnly);
+        let p: Prefs =
+            serde_json::from_str(&format!(r#"{{"agent_runs_queries": "{}"}}"#, AGENT_RUNS[2]))
+                .unwrap();
+        assert_eq!(p.sanitized().agent_run(), super::AgentRun::All);
     }
 }
 
@@ -941,7 +992,34 @@ impl SettingsWindow {
                     d.confirm_save,
                 )),
         );
-        vec![general, appearance, interface, editor, data, safety]
+        let ai = SettingPage::new("AI")
+            .icon(IconName::Bot)
+            .group(
+                SettingGroup::new()
+                    .title("Agents")
+                    .item(
+                        SettingItem::new(
+                            "Agents Can Run Queries",
+                            SettingField::dropdown(
+                                AGENT_RUNS
+                                    .iter()
+                                    .map(|(n)| (SharedString::from(*n), SharedString::from(*n)))
+                                    .collect(),
+                                |_| get().agent_runs_queries.clone().into(),
+                                |v: SharedString, cx| {
+                                    update(cx, |p| p.agent_runs_queries = v.to_string())
+                                },
+                            )
+                            .default_value(SharedString::from(d.agent_runs_queries.clone())),
+                        )
+                        .description(
+                            "What AI agents (the AI panel, tusk mcp clients) may run without asking. \
+                             Never: they draft SQL into tabs — you run it. Read-only: single SELECT-type \
+                             statements run, rows go back to the agent. All: anything runs, including writes.",
+                        ),
+                    ),
+            );
+        vec![general, appearance, interface, editor, data, safety, ai]
     }
 }
 

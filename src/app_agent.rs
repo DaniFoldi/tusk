@@ -802,6 +802,122 @@ impl TuskApp {
                     let _ = reply.send(res);
                 });
             }
+            "run_sql" => {
+                let (Some(sql), Some(pool)) = (arg("sql"), self.pool.clone()) else {
+                    let _ = reply.send(Err("Not connected, or no `sql` given.".into()));
+                    return;
+                };
+                // What the settings let this run — Never refuses, Read-only
+                // passes single SELECT-type statements, All runs anything.
+                if let Err(e) = crate::mcp_bridge::agent_may_run(
+                    crate::settings::get().agent_run(),
+                    pool.engine(),
+                    &sql,
+                ) {
+                    let _ = reply.send(Err(e));
+                    return;
+                }
+                let limit = arg("limit")
+                    .and_then(|l| l.parse::<i64>().ok())
+                    .unwrap_or(100)
+                    .clamp(1, 500);
+                let (hist_conn, hist_db) = self
+                    .active_conn
+                    .as_ref()
+                    .map(|(c, _)| (c.name.clone(), c.database.clone()))
+                    .unwrap_or_default();
+                self.toast_info("AI ran a query — see the console");
+                cx.notify();
+                crate::db::runtime().spawn(async move {
+                    let t0 = std::time::Instant::now();
+                    let hist = |sql: &str, ok: bool| {
+                        crate::console::add_history(crate::console::HistoryItem {
+                            at: chrono::Local::now(),
+                            sql: sql.trim().to_string(),
+                            connection: hist_conn.clone(),
+                            database: hist_db.clone(),
+                            ms: t0.elapsed().as_millis(),
+                            ok,
+                        })
+                    };
+                    // All-mode mutations don't produce rows — they report
+                    // rows affected, like the SQL editor's run path.
+                    if crate::db::classify_statement(&sql) != crate::db::StmtKind::Query {
+                        let out = crate::db::run_exec(&pool, &sql)
+                            .await
+                            .map(|n| format!("OK — {n} rows affected"));
+                        hist(&sql, out.is_ok());
+                        let _ = reply.send(out.map_err(|e| e.to_string()));
+                        return;
+                    }
+                    let out = crate::db::run_query_rows(&pool, &sql, limit + 1).await;
+                    let out = match out {
+                        Ok(rows) => {
+                            hist(&sql, true);
+                            let truncated = rows.len() as i64 > limit;
+                            let mut rows = rows;
+                            rows.truncate(limit as usize);
+                            if rows.is_empty() {
+                                Ok("0 rows".to_string())
+                            } else {
+                                let cols = crate::sql::infer_columns(&rows);
+                                let mut table = vec![
+                                    cols.iter()
+                                        .map(|c| c.name.clone())
+                                        .collect::<Vec<_>>()
+                                        .join("\t"),
+                                ];
+                                for row in &rows {
+                                    table.push(
+                                        cols.iter()
+                                            .map(|c| {
+                                                let cell = crate::copy_as::plain(
+                                                    row.get(c.name.as_str())
+                                                        .unwrap_or(&serde_json::Value::Null),
+                                                );
+                                                // Keep the payload lean: cells capped,
+                                                // tabs / newlines flattened.
+                                                let mut cell: String =
+                                                    cell.chars().take(300).collect();
+                                                if cell.contains('\t') || cell.contains('\n') {
+                                                    cell = cell.replace(['\t', '\n'], " ");
+                                                }
+                                                cell
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join("\t"),
+                                    );
+                                }
+                                let mut s = format!(
+                                    "{}{}\n\n{}",
+                                    rows.len(),
+                                    if truncated {
+                                        " rows (truncated)"
+                                    } else {
+                                        " rows"
+                                    },
+                                    table.join("\n")
+                                );
+                                const MAX: usize = 64 * 1024;
+                                if s.len() > MAX {
+                                    let mut end = MAX;
+                                    while end > 0 && !s.is_char_boundary(end) {
+                                        end -= 1;
+                                    }
+                                    s.truncate(end);
+                                    s.push_str("\n… (output truncated — narrow the query)");
+                                }
+                                Ok(s)
+                            }
+                        }
+                        Err(e) => {
+                            hist(&sql, false);
+                            Err(e.to_string())
+                        }
+                    };
+                    let _ = reply.send(out);
+                });
+            }
             other => {
                 let _ = reply.send(Err(format!("Unknown tool {other}")));
             }

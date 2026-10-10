@@ -52,6 +52,24 @@ pub fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
+            "name": "run_sql",
+            "description": "Run SQL and return its rows as TSV (or rows-affected for writes). \
+                Only works when the user's settings allow it: refused by default; Read-only \
+                mode runs single SELECT-type statements only. When refused or unsure, use \
+                open_sql_tab instead — the user reviews and runs it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sql": { "type": "string", "description": "One SQL statement." },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows returned (default 100, cap 500)."
+                    }
+                },
+                "required": ["sql"]
+            }
+        },
+        {
             "name": "get_context",
             "description": "The connection, database, current schema, the schemas, and what the user has open.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -291,6 +309,56 @@ pub fn run_standalone() {
     serve(|| discover());
 }
 
+/// What run_sql may do with [`AgentRun`] permissions. Read-only is the
+/// careful one: only a single statement, only SQL engines (the NoSQL
+/// classifiers pass everything through), only statements that read — and
+/// the body scan catches what the first keyword can't (data-modifying
+/// CTEs, `SELECT … INTO`, assigning PRAGMAs), refusing rather than
+/// risking a false pass.
+pub fn agent_may_run(
+    perm: crate::settings::AgentRun,
+    engine: crate::engine::Engine,
+    sql: &str,
+) -> Result<(), String> {
+    use crate::settings::AgentRun;
+    match perm {
+        AgentRun::Never => Err(
+            "Tusk's settings don't let agents run queries (Settings → AI → Agents Can Run \
+             Queries). Put the SQL into a tab with open_sql_tab — the user runs it."
+                .into(),
+        ),
+        AgentRun::ReadOnly => {
+            if !engine.caps().sql {
+                return Err(format!(
+                    "Read-only mode can't classify {} statements — it only runs SQL.",
+                    engine.label()
+                ));
+            }
+            if sql.split(';').filter(|s| !s.trim().is_empty()).count() > 1 {
+                return Err("Read-only mode runs one statement at a time.".into());
+            }
+            if crate::db::classify_statement(sql) != crate::db::StmtKind::Query {
+                return Err(
+                    "Read-only mode refuses this statement: it only runs SELECT-type \
+                     queries. Use open_sql_tab for the rest."
+                        .into(),
+                );
+            }
+            let body = sql.to_ascii_uppercase();
+            const WRITES: [&str; 6] = ["INSERT", "UPDATE", "DELETE", "MERGE", "INTO", "PRAGMA"];
+            if WRITES.iter().any(|w| body.contains(w)) {
+                return Err(
+                    "Read-only mode refuses this statement: it writes or changes settings. \
+                     Use open_sql_tab for the rest."
+                        .into(),
+                );
+            }
+            Ok(())
+        }
+        AgentRun::All => Ok(()),
+    }
+}
+
 /// The MCP stdio loop, relaying each tool call to the app behind `resolve`.
 fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
     let stdin = std::io::stdin();
@@ -313,7 +381,9 @@ fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
                 "serverInfo": { "name": SERVER_NAME, "title": "Tusk", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": "Tools of Tusk, the database client the user is working in. \
                     Inspect the database with get_context / list_tables / describe_table. \
-                    Put SQL for the user into a tab with open_sql_tab; never run it yourself."
+                    Put SQL for the user into a tab with open_sql_tab — they review and run it. \
+                    run_sql only works if the user's settings allow it (never by default, \
+                    read-only by choice); when refused, fall back to open_sql_tab."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
@@ -426,6 +496,45 @@ mod tests {
         let instance = host.instance.clone();
         drop(host);
         assert!(!instance.exists(), "Drop removes the instance file");
+    }
+
+    /// run_sql's permission gate, engine by engine and hole by hole.
+    #[test]
+    fn agent_may_run_enforces_the_modes() {
+        use crate::engine::Engine;
+        use crate::settings::AgentRun as R;
+        let pg = Engine::Postgres;
+        // Never refuses everything.
+        assert!(super::agent_may_run(R::Never, pg, "SELECT 1").is_err());
+        // Read-only passes a plain SELECT.
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT 1").is_ok());
+        assert!(
+            super::agent_may_run(R::ReadOnly, pg, "select id, name from users where id = 7")
+                .is_ok()
+        );
+        assert!(super::agent_may_run(R::ReadOnly, pg, "EXPLAIN SELECT 1").is_ok());
+        // …and refuses writes at the first keyword…
+        assert!(super::agent_may_run(R::ReadOnly, pg, "UPDATE users SET a = 1").is_err());
+        assert!(super::agent_may_run(R::ReadOnly, pg, "TRUNCATE users").is_err());
+        // …writes hidden behind a SELECT-shape statement…
+        assert!(
+            super::agent_may_run(
+                R::ReadOnly,
+                pg,
+                "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d"
+            )
+            .is_err()
+        );
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT * INTO tmp FROM users").is_err());
+        // …multi-statement smuggling (the trailing `;` is fine)…
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT 1; DROP TABLE users").is_err());
+        assert!(super::agent_may_run(R::ReadOnly, pg, "SELECT 1;").is_ok());
+        // …and non-SQL engines, whose classifiers pass everything through.
+        assert!(super::agent_may_run(R::ReadOnly, Engine::Redis, "GET k").is_err());
+        assert!(super::agent_may_run(R::ReadOnly, Engine::MongoDb, "find").is_err());
+        // All runs anything, on any engine.
+        assert!(super::agent_may_run(R::All, pg, "DROP TABLE users").is_ok());
+        assert!(super::agent_may_run(R::All, Engine::Redis, "FLUSHALL").is_ok());
     }
 
     /// `tusk mcp` discovery: the newest *live* instance wins — a crashed
