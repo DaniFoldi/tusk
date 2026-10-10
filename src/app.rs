@@ -3808,6 +3808,10 @@ impl TuskApp {
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    // The toolbar (view switcher, + Row, count, filters, paging)
+                    // sits above the table, below the tab strip — the table
+                    // grows to fill what's left.
+                    .child(self.render_tab_toolbar(ix, cx))
                     .when(g.view != TabView::Data, |this| {
                         this.child(self.render_table_header(ix, cx))
                     })
@@ -3815,7 +3819,6 @@ impl TuskApp {
                         this.child(self.render_filter_bar(ix, cx))
                     })
                     .child(div().flex_1().min_h_0().child(body))
-                    .child(self.render_tab_bottom_bar(ix, cx))
                     .into_any_element()
             }
             Some((_, WorkspaceTab::Sql(s))) => self.render_sql_tab(s, cx).into_any_element(),

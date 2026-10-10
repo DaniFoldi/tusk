@@ -1499,7 +1499,10 @@ impl TuskApp {
     }
 
     /// Grid bottom bar: `Data | Structure`, + Column, row range, Filters.
-    pub(super) fn render_tab_bottom_bar(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+    /// The tab's toolbar — view switcher (Data / Structure / Index), add
+    /// buttons, row count, filters and paging. Above the table, below the
+    /// tab strip.
+    pub(super) fn render_tab_toolbar(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(tab) = self.grid_tab(ix) else {
             return div().into_any_element();
         };
@@ -1605,7 +1608,7 @@ impl TuskApp {
             .items_center()
             .gap_2()
             .px_2()
-            .border_t_1()
+            .border_b_1()
             .border_color(border)
             .child(segmented)
             .when(view == TabView::Data && editable, |this| {
@@ -1675,7 +1678,7 @@ impl TuskApp {
                 let t = cx.theme();
                 let (fg, muted) = (t.foreground, t.muted_foreground);
                 let settings = Popover::new("page-settings")
-                    .anchor(gpui_kit::Anchor::BottomRight)
+                    .anchor(gpui_kit::Anchor::TopRight)
                     .trigger(
                         Button::new("page-settings-btn")
                             .ghost()
