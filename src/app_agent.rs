@@ -39,7 +39,9 @@ pub struct AiPanel {
     input: Option<Entity<TextareaState>>,
     pub agents: std::rc::Rc<Vec<AgentSpec>>,
     sessions: Vec<SessionSummary>,
-    host: Option<Host>,
+    /// The MCP bridge host of this window (see start_mcp_host); app code
+    /// publishes the connection identity through it.
+    pub(crate) host: Option<Host>,
     /// Highlighted row of the `/` command or `@` table list.
     pick: usize,
     plan_open: bool,

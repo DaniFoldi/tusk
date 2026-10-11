@@ -2391,6 +2391,10 @@ impl TuskApp {
         db::forget_last_connection();
         this.databases.clear();
         this.database_sizes.clear();
+        // The MCP catalog shows the window as connected-to-nothing again.
+        if let Some(h) = &mut this.ai.host {
+            h.set_connection(None, "", "");
+        }
         // Drop open tabs too, or the status bar keeps showing the last tab's
         // row count on the welcome screen.
         this.reset_workspace();
@@ -2448,6 +2452,11 @@ impl TuskApp {
         });
         self.reach = Some((reach_host.clone(), reach_port));
         self.active_conn = Some((conn.clone(), password.to_string()));
+        // Publish this window's identity for the MCP catalog: agents
+        // address windows by connection name (list_connections).
+        if let Some(h) = &mut self.ai.host {
+            h.set_connection(Some(&conn.name), &conn.database, conn.engine.label());
+        }
         // A database just opened under this profile: feed the dropdown's
         // "recent" shortcut list.
         if !conn.database.trim().is_empty() {

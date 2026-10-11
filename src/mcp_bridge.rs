@@ -19,82 +19,104 @@ pub const FLAG: &str = "--mcp-bridge";
 pub const SERVER_NAME: &str = "tusk";
 /// The bridge's secret travels in its environment (not argv, which `ps` shows).
 const TOKEN_ENV: &str = "TUSK_MCP_TOKEN";
+/// The ACP-side bridge's own connection name (set in its env by
+/// `server_spec`; the catalog shows it for `list_connections`).
+const CONNECTION_ENV: &str = "TUSK_MCP_CONNECTION";
 
-/// The tools, as `tools/list` returns them.
+/// The tools, as `tools/list` returns them. Every tool takes an optional
+/// `connection` — which running Tusk window to talk to (the
+/// saved-connection name); without it, the most recently active one
+/// answers. `list_connections` shows the options.
 pub fn tools() -> Value {
+    let connection = || {
+        json!({
+            "type": "string",
+            "description": "The saved-connection name of the Tusk window to talk to \
+                (optional; the most recently active window when omitted). \
+                list_connections shows every live one."
+        })
+    };
+    let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
+        let mut props = properties.as_object().cloned().unwrap_or_default();
+        props.insert("connection".into(), connection());
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": props,
+                "required": required
+            }
+        })
+    };
     json!([
-        {
-            "name": "open_sql_tab",
-            "description": "Write a SQL query into a new query tab in Tusk for the user to review. \
-                The query is NOT executed; the user runs it. Use this whenever you give the user SQL.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "sql": { "type": "string", "description": "The SQL text." },
-                    "title": { "type": "string", "description": "Short tab title (optional)." }
-                },
-                "required": ["sql"]
-            }
-        },
-        {
-            "name": "replace_active_query",
-            "description": "Replace the text of the query tab the user has open (or open a new one) \
-                with this SQL. Not executed.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "sql": { "type": "string" } },
-                "required": ["sql"]
-            }
-        },
-        {
-            "name": "get_active_query",
-            "description": "The SQL text of the query tab the user has open, and its selection.",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "run_sql",
-            "description": "Run SQL and return its rows as TSV (or rows-affected for writes). \
-                Only works when the user's settings allow it: refused by default; Read-only \
-                mode runs single SELECT-type statements only. When refused or unsure, use \
-                open_sql_tab instead — the user reviews and runs it.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "sql": { "type": "string", "description": "One SQL statement." },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Max rows returned (default 100, cap 500)."
-                    }
-                },
-                "required": ["sql"]
-            }
-        },
-        {
-            "name": "get_context",
-            "description": "The connection, database, current schema, the schemas, and what the user has open.",
-            "inputSchema": { "type": "object", "properties": {} }
-        },
-        {
-            "name": "list_tables",
-            "description": "Tables, views and materialized views of a schema (default: the current one).",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "schema": { "type": "string" } }
-            }
-        },
-        {
-            "name": "describe_table",
-            "description": "The CREATE statement of a table or view: columns, types, defaults, keys, \
-                indexes, constraints.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "table": { "type": "string" },
-                    "schema": { "type": "string" }
-                },
-                "required": ["table"]
-            }
-        }
+        tool(
+            "open_sql_tab",
+            "Write a SQL query into a new query tab in Tusk for the user to review. \
+              The query is NOT executed; the user runs it. Use this whenever you give the user SQL.",
+            json!({
+                "sql": { "type": "string", "description": "The SQL text." },
+                "title": { "type": "string", "description": "Short tab title (optional)." }
+            }),
+            &["sql"]
+        ),
+        tool(
+            "replace_active_query",
+            "Replace the text of the query tab the user has open (or open a new one) \
+              with this SQL. Not executed.",
+            json!({ "sql": { "type": "string" } }),
+            &["sql"]
+        ),
+        tool(
+            "get_active_query",
+            "The SQL text of the query tab the user has open, and its selection.",
+            json!({}),
+            &[]
+        ),
+        tool(
+            "run_sql",
+            "Run SQL and return its rows as TSV (or rows-affected for writes). \
+              Only works when the user's settings allow it: refused by default; Read-only \
+              mode runs single SELECT-type statements only. When refused or unsure, use \
+              open_sql_tab instead — the user reviews and runs it.",
+            json!({
+                "sql": { "type": "string", "description": "One SQL statement." },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows returned (default 100, cap 500)."
+                }
+            }),
+            &["sql"]
+        ),
+        tool(
+            "get_context",
+            "The connection, database, current schema, the schemas, and what the user has open.",
+            json!({}),
+            &[]
+        ),
+        tool(
+            "list_tables",
+            "Tables, views and materialized views of a schema (default: the current one).",
+            json!({ "schema": { "type": "string" } }),
+            &[]
+        ),
+        tool(
+            "describe_table",
+            "The CREATE statement of a table or view: columns, types, defaults, keys, \
+              indexes, constraints.",
+            json!({
+                "table": { "type": "string" },
+                "schema": { "type": "string" }
+            }),
+            &["table"]
+        ),
+        tool(
+            "list_connections",
+            "Every running Tusk window: its connection name, database and engine — the \
+              `connection` values the other tools accept. No window needed to answer.",
+            json!({}),
+            &[]
+        )
     ])
 }
 
@@ -124,8 +146,25 @@ pub struct Host {
     pub socket: PathBuf,
     /// Per-launch secret the bridge must send with every call.
     token: String,
-    /// `<run>/mcp-<pid>.json` — socket + token, how `tusk mcp` finds us.
+    /// `<run>/mcp-<pid>-<seq>.json` — socket + token + identity, how
+    /// `tusk mcp` finds us and tells windows apart.
     instance: PathBuf,
+    /// What this window is connected to: connection name, database,
+    /// engine label (`null` connection = the welcome screen).
+    identity: Value,
+}
+
+/// Per-host sequence: several windows of one process each get their own
+/// socket and instance file (`mcp-<pid>-<seq>…`).
+static HOST_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The identity half of an instance file — everything but the endpoint.
+fn identity_value(connection: Option<&str>, database: &str, engine: &str) -> Value {
+    json!({
+        "connection": connection,
+        "database": database,
+        "engine": engine,
+    })
 }
 
 /// 128 random bits as hex.
@@ -160,9 +199,14 @@ impl Host {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
         }
         let _rt = crate::db::runtime().enter();
+        let seq = HOST_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         #[cfg(unix)]
         let (socket, listener) = {
-            let socket = dir.join(format!("mcp-{}.sock", std::process::id()));
+            let socket = if seq == 0 {
+                dir.join(format!("mcp-{}.sock", std::process::id()))
+            } else {
+                dir.join(format!("mcp-{}-{seq}.sock", std::process::id()))
+            };
             let _ = std::fs::remove_file(&socket);
             let listener = tokio::net::UnixListener::bind(&socket)?;
             (socket, listener)
@@ -180,14 +224,27 @@ impl Host {
             std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
         }
         let token = random_token();
-        // The instance file (socket + token) lets `tusk mcp` — an MCP
-        // server started by *any* client — find this app. It sits beside
-        // the socket, same 0600 / 0700 protection, so it widens nothing:
-        // only this user could read the socket itself anyway.
-        let instance = dir.join(format!("mcp-{}.json", std::process::id()));
+        // The instance file (socket + token + identity) lets `tusk mcp` — an
+        // MCP server started by *any* client — find this window, and tell it
+        // apart from the others. It sits beside the socket, same 0600 / 0700
+        // protection, so it widens nothing: only this user could read the
+        // socket itself anyway.
+        let instance = if seq == 0 {
+            dir.join(format!("mcp-{}.json", std::process::id()))
+        } else {
+            dir.join(format!("mcp-{}-{seq}.json", std::process::id()))
+        };
+        let identity = identity_value(None, "", "");
         let _ = std::fs::write(
             &instance,
-            json!({ "socket": socket.display().to_string(), "token": token }).to_string(),
+            json!({
+                "socket": socket.display().to_string(),
+                "token": token,
+                "connection": identity["connection"],
+                "database": identity["database"],
+                "engine": identity["engine"],
+            })
+            .to_string(),
         );
         #[cfg(unix)]
         {
@@ -235,19 +292,44 @@ impl Host {
                 socket,
                 token,
                 instance,
+                identity,
             },
             rx,
         ))
     }
 
-    /// The MCP server entry for `session/new`.
+    /// What this window is connected to. Called on connect, database
+    /// switch and disconnect, so the catalog `tusk mcp` serves is always
+    /// current. Best-effort: a failed rewrite keeps the last identity.
+    pub fn set_connection(&mut self, connection: Option<&str>, database: &str, engine: &str) {
+        self.identity = identity_value(connection, database, engine);
+        let _ = std::fs::write(
+            &self.instance,
+            json!({
+                "socket": self.socket.display().to_string(),
+                "token": self.token,
+                "connection": self.identity["connection"],
+                "database": self.identity["database"],
+                "engine": self.identity["engine"],
+            })
+            .to_string(),
+        );
+    }
+
+    /// The MCP server entry for `session/new`. The connection name rides
+    /// along in the env so the ACP-side bridge knows its own identity
+    /// (a second window runs its own bridge with its own name).
     pub fn server_spec(&self) -> Value {
         let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tusk"));
+        let mut env = vec![json!({ "name": TOKEN_ENV, "value": self.token })];
+        if let Some(name) = self.identity["connection"].as_str() {
+            env.push(json!({ "name": CONNECTION_ENV, "value": name }));
+        }
         json!({
             "name": SERVER_NAME,
             "command": exe.display().to_string(),
             "args": [FLAG, self.socket.display().to_string()],
-            "env": [{ "name": TOKEN_ENV, "value": self.token }]
+            "env": env
         })
     }
 }
@@ -259,54 +341,149 @@ impl Drop for Host {
     }
 }
 
-/// The newest running Tusk's endpoint, for `tusk mcp`: instance files in
-/// the run dir, newest first, and the first socket that still answers
-/// wins (a crashed Tusk leaves its file behind; the probe skips it).
-pub fn discover() -> Option<(PathBuf, String)> {
-    discover_in(&crate::acp_registry::data_dir().join("run"))
+/// One live Tusk window as `tusk mcp` sees it: the endpoint plus what
+/// that window is connected to.
+#[derive(Clone, Debug)]
+struct Instance {
+    socket: PathBuf,
+    token: String,
+    /// Saved-connection name; `None` = welcome screen.
+    connection: Option<String>,
+    database: String,
+    engine: String,
 }
 
-fn discover_in(dir: &Path) -> Option<(PathBuf, String)> {
-    let mut cands: Vec<(std::time::SystemTime, PathBuf, String)> = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let n = e.file_name();
-            let n = n.to_string_lossy();
-            n.starts_with("mcp-") && n.ends_with(".json")
-        })
-        .filter_map(|e| {
-            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
-            let socket = PathBuf::from(v["socket"].as_str()?);
-            let token = v["token"].as_str()?.to_string();
-            let mtime = e.metadata().ok()?.modified().ok()?;
-            Some((mtime, socket, token))
-        })
-        .collect();
-    cands.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, socket, token) in cands {
-        if connect(&socket).is_ok() {
-            return Some((socket, token));
+impl Instance {
+    /// "Titanium" or "Titanium · cleverev-prod · PostgreSQL" — how the
+    /// catalog and error messages name a window.
+    fn label(&self) -> String {
+        match &self.connection {
+            Some(c) if !self.database.is_empty() => {
+                format!("{c} · {} ({})", self.database, self.engine)
+            }
+            Some(c) => c.clone(),
+            None => "Tusk (no connection)".to_string(),
         }
     }
-    None
+}
+
+/// Every live Tusk window, newest first — the catalog `tusk mcp` serves
+/// and routes over. Instance files in the run dir (written by each
+/// window's Host) are probed: a crashed Tusk leaves its file behind and
+/// is skipped.
+fn discover_all_in(dir: &Path) -> Vec<Instance> {
+    let mut cands: Vec<(std::time::SystemTime, Instance)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        cands.extend(
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.starts_with("mcp-") && n.ends_with(".json")
+                })
+                .filter_map(|e| {
+                    let v: Value =
+                        serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+                    let socket = PathBuf::from(v["socket"].as_str()?);
+                    let token = v["token"].as_str()?.to_string();
+                    let connection = v["connection"].as_str().map(str::to_string);
+                    let database = v["database"].as_str().unwrap_or_default().to_string();
+                    let engine = v["engine"].as_str().unwrap_or_default().to_string();
+                    let mtime = e.metadata().ok()?.modified().ok()?;
+                    Some((
+                        mtime,
+                        Instance {
+                            socket,
+                            token,
+                            connection,
+                            database,
+                            engine,
+                        },
+                    ))
+                }),
+        );
+    }
+    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    cands
+        .into_iter()
+        .map(|(_, i)| i)
+        .filter(|i| connect(&i.socket).is_ok())
+        .collect()
+}
+
+/// The newest running Tusk's endpoint, for `tusk mcp` (the default when
+/// a tool call doesn't name a connection).
+pub fn discover() -> Option<(PathBuf, String)> {
+    let i = catalog().into_iter().next()?;
+    Some((i.socket, i.token))
+}
+
+/// Every live Tusk window this user is running, newest first.
+fn catalog() -> Vec<Instance> {
+    discover_all_in(&crate::acp_registry::data_dir().join("run"))
+}
+
+/// The window a tool call wants: by connection name (case-insensitive,
+/// then a database-name match), or the newest when it doesn't say.
+fn pick<'a>(instances: &'a [Instance], want: Option<&str>) -> Result<&'a Instance, String> {
+    let Some(want) = want else {
+        return instances
+            .first()
+            .ok_or_else(|| "Tusk is not running — start Tusk first.".to_string());
+    };
+    let w = want.trim().to_lowercase();
+    instances
+        .iter()
+        .find(|i| {
+            i.connection
+                .as_deref()
+                .is_some_and(|c| c.eq_ignore_ascii_case(&w))
+        })
+        .or_else(|| {
+            instances
+                .iter()
+                .find(|i| i.database.eq_ignore_ascii_case(&w))
+        })
+        .ok_or_else(|| {
+            let names: Vec<String> = instances.iter().map(|i| i.label()).collect();
+            if names.is_empty() {
+                "Tusk is not running — start Tusk first.".to_string()
+            } else {
+                format!(
+                    "No running Tusk is connected as \"{want}\". Live: {}",
+                    names.join(" | ")
+                )
+            }
+        })
 }
 
 /// `tusk --mcp-bridge <socket>`: an ACP agent's MCP stdio server, its
-/// endpoint handed to the agent in the session spec (token in its env).
+/// endpoint handed to the agent in the session spec (token in its env,
+/// connection name so `list_connections` can name it).
 pub fn run(socket: &Path) {
     let socket = socket.to_path_buf();
     let token = std::env::var(TOKEN_ENV).unwrap_or_default();
-    serve(move || Some((socket.clone(), token.clone())));
+    let connection = std::env::var(CONNECTION_ENV).ok().filter(|c| !c.is_empty());
+    serve(move || {
+        vec![Instance {
+            socket: socket.clone(),
+            token: token.clone(),
+            connection: connection.clone(),
+            database: String::new(),
+            engine: String::new(),
+        }]
+    });
 }
 
 /// `tusk mcp`: the same MCP server for any client — Claude Desktop, Claude
-/// Code, Cursor, opencode… — without the AI panel. The running app is found
-/// per call (newest live instance wins), so app restarts are followed
-/// without restarting the client. Calls before Tusk starts answer with a
-/// pointer to start it.
+/// Code, Cursor, opencode… — without the AI panel. Every running Tusk
+/// window is served at once: tools take a `connection` argument (the
+/// saved-connection name), and without it the most recently active window
+/// answers. The catalog is re-read per call, so app restarts — and new
+/// windows — are followed without restarting the client.
 pub fn run_standalone() {
-    serve(|| discover());
+    serve(catalog);
 }
 
 /// What run_sql may do with [`AgentRun`] permissions. Read-only is the
@@ -386,11 +563,16 @@ fn has_word(hay: &str, word: &str) -> bool {
     })
 }
 
-/// The MCP stdio loop, relaying each tool call to the app behind `resolve`.
-fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
+/// The MCP stdio loop, relaying each tool call to a Tusk window picked
+/// from the catalog `resolve` returns.
+fn serve(resolve: impl FnMut() -> Vec<Instance> + 'static) {
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut conn: Option<(Stream, BufReader<Stream>, String)> = None;
+    // The endpoint `conn` is open to — a different target forces a
+    // reconnect.
+    let mut conn_key: Option<(PathBuf, String)> = None;
+    let mut resolve = resolve;
     let mut next = 0u64;
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -407,10 +589,13 @@ fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "title": "Tusk", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": "Tools of Tusk, the database client the user is working in. \
-                    Inspect the database with get_context / list_tables / describe_table. \
-                    Put SQL for the user into a tab with open_sql_tab — they review and run it. \
-                    run_sql only works if the user's settings allow it (never by default, \
-                    read-only by choice); when refused, fall back to open_sql_tab."
+                    Several Tusk windows may be running; list_connections shows them, and the \
+                    optional `connection` argument of each tool picks one (without it, the most \
+                    recently active window answers). Inspect the database with get_context / \
+                    list_tables / describe_table. Put SQL for the user into a tab with \
+                    open_sql_tab — they review and run it. run_sql only works if the user's \
+                    settings allow it (never by default, read-only by choice); when refused, \
+                    fall back to open_sql_tab."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
@@ -421,7 +606,7 @@ fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
                     .unwrap_or_default()
                     .to_string();
                 let args = msg["params"].get("arguments").cloned().unwrap_or(json!({}));
-                let (ok, text) = call(&mut conn, &mut resolve, next, &name, args);
+                let (ok, text) = call(&mut conn, &mut conn_key, &mut resolve, next, &name, args);
                 Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": !ok }))
             }
             _ => Err((-32601, format!("unknown method {method}"))),
@@ -438,24 +623,45 @@ fn serve(mut resolve: impl FnMut() -> Option<(PathBuf, String)>) {
 
 fn call(
     conn: &mut Option<(Stream, BufReader<Stream>, String)>,
-    resolve: &mut impl FnMut() -> Option<(PathBuf, String)>,
+    conn_key: &mut Option<(PathBuf, String)>,
+    resolve: &mut impl FnMut() -> Vec<Instance>,
     id: u64,
     name: &str,
     args: Value,
 ) -> (bool, String) {
-    // One reconnect: the app may have restarted (standalone mode
-    // re-discovers, so the fresh instance is picked up).
+    // The catalog is live per call: new windows appear, closed ones
+    // drop out, identities follow connect / disconnect.
+    let instances = resolve();
+    // list_connections is answered by the bridge itself — it *is* the
+    // catalog. (No Tusk window needed, though an empty one tells the
+    // agent just as much.)
+    if name == "list_connections" {
+        return (true, catalog_text(&instances));
+    }
+    let want = args["connection"].as_str().map(|s| s.to_string());
+    let target = match pick(&instances, want.as_deref()) {
+        Ok(t) => t,
+        Err(e) => return (false, e),
+    };
+    let key = (target.socket.clone(), target.token.clone());
+    if *conn_key != Some(key.clone()) {
+        *conn = None;
+    }
+    // One reconnect: the chosen window may have restarted between calls.
     for _ in 0..2 {
         if conn.is_none() {
-            let Some((socket, token)) = resolve() else {
-                return (false, "Tusk is not running — start Tusk first.".into());
-            };
-            match connect(&socket) {
+            match connect(&target.socket) {
                 Ok(s) => match s.try_clone() {
-                    Ok(r) => *conn = Some((s, BufReader::new(r), token)),
+                    Ok(r) => {
+                        *conn = Some((s, BufReader::new(r), target.token.clone()));
+                        *conn_key = Some(key.clone());
+                    }
                     Err(e) => return (false, e.to_string()),
                 },
-                Err(_) => return (false, "Tusk is not running — start Tusk first.".into()),
+                Err(_) => {
+                    *conn_key = None;
+                    return (false, "Tusk is not running — start Tusk first.".into());
+                }
             }
         }
         let Some((w, r, token)) = conn.as_mut() else {
@@ -481,14 +687,30 @@ fn call(
     (false, "Lost the connection to Tusk.".into())
 }
 
+/// `list_connections`: one line per live window, newest first.
+fn catalog_text(instances: &[Instance]) -> String {
+    if instances.is_empty() {
+        return "No Tusk window is running — start Tusk first.".to_string();
+    }
+    let mut s = format!("{} running Tusk window(s):\n", instances.len());
+    for (i, inst) in instances.iter().enumerate() {
+        s.push_str(&format!("{}. {}\n", i + 1, inst.label()));
+    }
+    s.push_str(
+        "Pass the connection name as the `connection` argument to any tool; \
+         without it the most recently active window answers.",
+    );
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Bridge → app round trip over the real transport (Unix socket, or
     /// loopback TCP on Windows), the token check, and the instance file
-    /// `tusk mcp` discovers. (One Host per test: the socket is named
-    /// after the process, so a second parallel start() would collide.)
+    /// `tusk mcp` discovers. (Hosts are pid-<seq> named, so parallel
+    /// starts don't collide.)
     #[test]
     fn bridge_reaches_host_and_checks_token() {
         let (host, mut rx) = Host::start().unwrap();
@@ -497,20 +719,37 @@ mod tests {
                 let _ = req.reply.send(Ok(format!("hi {}", req.name)));
             }
         });
-        let mut conn = None;
         let mut fixed = {
             let (sock, tok) = (host.socket.clone(), host.token.clone());
-            move || Some((sock.clone(), tok.clone()))
+            move || {
+                vec![Instance {
+                    socket: sock.clone(),
+                    token: tok.clone(),
+                    connection: None,
+                    database: String::new(),
+                    engine: String::new(),
+                }]
+            }
         };
-        let (ok, text) = call(&mut conn, &mut fixed, 1, "ping", json!({}));
+        let mut conn = None;
+        let mut key = None;
+        let (ok, text) = call(&mut conn, &mut key, &mut fixed, 1, "ping", json!({}));
         assert!(ok, "{text}");
         assert_eq!(text, "hi ping");
         let mut conn = None;
         let mut wrong = {
             let sock = host.socket.clone();
-            move || Some((sock.clone(), "wrong".to_string()))
+            move || {
+                vec![Instance {
+                    socket: sock.clone(),
+                    token: "wrong".to_string(),
+                    connection: None,
+                    database: String::new(),
+                    engine: String::new(),
+                }]
+            }
         };
-        let (ok, _) = call(&mut conn, &mut wrong, 2, "ping", json!({}));
+        let (ok, _) = call(&mut conn, &mut key, &mut wrong, 2, "ping", json!({}));
         assert!(!ok, "a wrong token must be refused");
         // The published instance file matches the host, and dies with it.
         let v: Value =
@@ -523,6 +762,99 @@ mod tests {
         let instance = host.instance.clone();
         drop(host);
         assert!(!instance.exists(), "Drop removes the instance file");
+    }
+
+    /// set_connection rewrites the instance file's identity — that's how
+    /// `tusk mcp` tells windows apart and names them to agents.
+    #[test]
+    fn set_connection_publishes_identity() {
+        let (mut host, mut rx) = Host::start().unwrap();
+        crate::db::runtime().spawn(async move {
+            while let Some(req) = rx.recv().await {
+                let _ = req.reply.send(Ok(String::new()));
+            }
+        });
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&host.instance).unwrap()).unwrap();
+        assert!(v["connection"].is_null(), "starts as no-connection");
+        host.set_connection(Some("Titanium"), "cleverev-prod", "PostgreSQL");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&host.instance).unwrap()).unwrap();
+        assert_eq!(v["connection"], "Titanium");
+        assert_eq!(v["database"], "cleverev-prod");
+        assert_eq!(v["engine"], "PostgreSQL");
+        host.set_connection(None, "", "");
+        let v: Value =
+            serde_json::from_str(&std::fs::read_to_string(&host.instance).unwrap()).unwrap();
+        assert!(v["connection"].is_null(), "disconnect clears it");
+    }
+
+    /// Two live windows in one catalog: the `connection` argument picks
+    /// which one answers (case-insensitive), no argument picks the most
+    /// recently touched, and an unknown name lists what's live.
+    #[test]
+    fn two_windows_route_by_connection() {
+        let (mut alpha, mut rx_a) = Host::start().unwrap();
+        let (mut beta, mut rx_b) = Host::start().unwrap();
+        alpha.set_connection(Some("Alpha"), "db-a", "PostgreSQL");
+        beta.set_connection(Some("Beta"), "db-b", "MySQL");
+        crate::db::runtime().spawn(async move {
+            while let Some(req) = rx_a.recv().await {
+                let _ = req.reply.send(Ok("alpha".to_string()));
+            }
+        });
+        crate::db::runtime().spawn(async move {
+            while let Some(req) = rx_b.recv().await {
+                let _ = req.reply.send(Ok("beta".to_string()));
+            }
+        });
+        // The catalog as `tusk mcp` would read it from the run dir —
+        // hand-built here so the test doesn't see the user's real windows.
+        let inst = |h: &Host, connection: &str, database: &str, engine: &str| Instance {
+            socket: h.socket.clone(),
+            token: h.token.clone(),
+            connection: Some(connection.to_string()),
+            database: database.to_string(),
+            engine: engine.to_string(),
+        };
+        let a = inst(&alpha, "Alpha", "db-a", "PostgreSQL");
+        let b = inst(&beta, "Beta", "db-b", "MySQL");
+        let mut catalog = move || vec![b.clone(), a.clone()];
+
+        let mut conn = None;
+        let mut key = None;
+        let (ok, text) = call(
+            &mut conn,
+            &mut key,
+            &mut catalog,
+            1,
+            "get_context",
+            json!({ "connection": "alpha" }),
+        );
+        assert!(ok && text == "alpha", "routing is case-insensitive: {text}");
+        let (ok, text) = call(
+            &mut conn,
+            &mut key,
+            &mut catalog,
+            2,
+            "get_context",
+            json!({ "connection": "Beta" }),
+        );
+        assert!(ok && text == "beta", "the second window answers: {text}");
+        let (ok, text) = call(
+            &mut conn,
+            &mut key,
+            &mut catalog,
+            3,
+            "get_context",
+            json!({ "connection": "Ghost" }),
+        );
+        assert!(!ok, "an unknown connection is an error");
+        assert!(
+            text.contains("Alpha") && text.contains("Beta"),
+            "the error lists the live windows: {text}"
+        );
+        drop((alpha, beta));
     }
 
     /// run_sql's permission gate, engine by engine and hole by hole.
@@ -585,7 +917,7 @@ mod tests {
         assert!(super::agent_may_run(R::All, Engine::Redis, "FLUSHALL").is_ok());
     }
 
-    /// `tusk mcp` discovery: the newest *live* instance wins — a crashed
+    /// `tusk mcp` discovery: only *live* instances are served — a crashed
     /// Tusk leaves a newer file behind, and its dead socket is skipped.
     #[cfg(unix)]
     #[test]
@@ -600,7 +932,14 @@ mod tests {
             let path = dir.join(name);
             std::fs::write(
                 &path,
-                json!({ "socket": socket, "token": format!("{name}-tok") }).to_string(),
+                json!({
+                    "socket": socket,
+                    "token": format!("{name}-tok"),
+                    "connection": null,
+                    "database": "",
+                    "engine": ""
+                })
+                .to_string(),
             )
             .unwrap();
             std::fs::File::open(&path)
@@ -621,12 +960,17 @@ mod tests {
             now,
         );
 
-        let found = discover_in(&dir).expect("the live instance must be found");
-        assert_eq!(found.0, live);
-        assert_eq!(found.1, "mcp-111.json-tok");
+        let found = discover_all_in(&dir);
+        assert_eq!(found.len(), 1, "only the live one: {found:?}");
+        assert_eq!(found[0].socket, live);
+        assert_eq!(found[0].token, "mcp-111.json-tok");
+        assert!(found[0].connection.is_none());
 
         drop(listener);
-        assert!(discover_in(&dir).is_none(), "no live socket, no instance");
+        assert!(
+            discover_all_in(&dir).is_empty(),
+            "no live socket, no instance"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -634,7 +978,7 @@ mod tests {
     fn discovery_in_an_empty_dir_finds_nothing() {
         let dir = std::env::temp_dir().join(format!("tusk-mcp-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(discover_in(&dir).is_none());
+        assert!(discover_all_in(&dir).is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -648,8 +992,14 @@ mod tests {
             .map(|t| t["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"open_sql_tab"));
+        assert!(names.contains(&"list_connections"));
         for tool in t.as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
+            assert!(
+                tool["inputSchema"]["properties"]["connection"].is_object(),
+                "{} must accept a connection argument",
+                tool["name"]
+            );
         }
     }
 }
