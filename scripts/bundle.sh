@@ -54,8 +54,10 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 # Distribution signature: a Developer ID, hardened runtime,
 # timestamped (what notarization needs). $TUSK_DIST_IDENTITY overrides.
+# The SHA-1 hash is extracted, not the name: names can hold non-ASCII,
+# which mangles between shells (see sign-dev.sh).
 dist="${TUSK_DIST_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null \
-  | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)}"
+  | awk '/Developer ID Application/ { print $2; exit }')}"
 if [ -n "$dist" ]; then
   # Nested code first (the pg tools, Sparkle's helpers inside out), then the app.
   for f in "$app"/Contents/Resources/pgtools/lib/* "$app"/Contents/Resources/pgtools/bin/* \
