@@ -277,6 +277,9 @@ impl Engine {
             Engine::Postgres | Engine::Greenplum => "postgres",
             Engine::Cockroach => "defaultdb",
             Engine::MsSql => "master",
+            // Redis / Valkey: the server's unnamed logical databases are
+            // indexes; blank connects to db 0.
+            Engine::Redis | Engine::Valkey => "0",
             _ => "",
         }
     }

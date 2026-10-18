@@ -188,7 +188,9 @@ impl ConnDialog {
             crate::engine::Engine::Cockroach => "defaultdb",
             crate::engine::Engine::MsSql => "master",
             crate::engine::Engine::Oracle => "FREEPDB1",
-            crate::engine::Engine::Redis | crate::engine::Engine::Valkey => "0",
+            // Redis / Valkey: the "Database index (0)" placeholder is the
+            // hint; a real "0" value would look like something the user
+            // typed. Blank connects to db 0 (engine::default_database).
             crate::engine::Engine::ClickHouse => "default",
             _ => "",
         };
@@ -257,17 +259,20 @@ impl ConnDialog {
             .map(|(_, e)| e.clone())
     }
 
-    /// Blank profile for "New Connection".
+    /// Blank profile for "New Connection". Host/port/user/database stay
+    /// empty where a placeholder says it better: the inputs' placeholders
+    /// ("127.0.0.1", "5432", …) already suggest the default, and a real
+    /// value would look like configuration the user made.
     fn blank() -> db::SavedConnection {
         db::SavedConnection {
             engine: crate::engine::Engine::Postgres,
             path: None,
             options: Default::default(),
             name: String::new(),
-            host: "127.0.0.1".to_string(),
+            host: String::new(),
             port: 5432,
-            database: "postgres".to_string(),
-            user: "postgres".to_string(),
+            database: String::new(),
+            user: String::new(),
             ssl: SslMode::Prefer,
             folder: None,
             tag: None,
@@ -703,15 +708,15 @@ impl ConnDialog {
                     ])
                     .into_any_element(),
                 );
-                if !matches!(engine, Engine::Redis | Engine::Valkey) {
-                    rows.push(
-                        line(vec![
-                            label("User").into_any_element(),
-                            grow(Input::new(&self.form.user).into_any_element()),
-                        ])
-                        .into_any_element(),
-                    );
-                }
+                // Every server form can carry a username: Redis 6+ and
+                // Valkey speak ACLs too, and the driver sends it.
+                rows.push(
+                    line(vec![
+                        label("User").into_any_element(),
+                        grow(Input::new(&self.form.user).into_any_element()),
+                    ])
+                    .into_any_element(),
+                );
                 rows.push(secret_row("Password", keychain));
                 rows.push(
                     line(vec![

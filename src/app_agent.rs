@@ -732,10 +732,22 @@ impl TuskApp {
             "get_context" => {
                 let mut s = String::new();
                 match &self.active_conn {
-                    Some((c, _)) => s.push_str(&format!(
-                        "Connection \"{}\": PostgreSQL database `{}` as `{}` on {}:{}\n",
-                        c.name, c.database, c.user, c.host, c.port
-                    )),
+                    Some((c, _)) => {
+                        let who = if c.user.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" as `{}`", c.user)
+                        };
+                        s.push_str(&format!(
+                            "Connection \"{}\": {} database `{}`{} on {}:{}\n",
+                            c.name,
+                            c.engine.label(),
+                            c.database,
+                            who,
+                            c.host,
+                            c.port
+                        ));
+                    }
                     None => s.push_str("Not connected to a database.\n"),
                 }
                 s.push_str(&format!(

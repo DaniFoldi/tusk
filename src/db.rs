@@ -2062,6 +2062,9 @@ mod tests {
         assert_eq!(Engine::MySql.default_database(), "");
         assert_eq!(Engine::ClickHouse.default_database(), "");
         assert_eq!(Engine::CloudflareD1.default_database(), "");
+        // Redis / Valkey: blank connects to the unnamed db 0.
+        assert_eq!(Engine::Redis.default_database(), "0");
+        assert_eq!(Engine::Valkey.default_database(), "0");
     }
 
     #[test]
