@@ -1003,7 +1003,7 @@ impl SettingsWindow {
                             SettingField::dropdown(
                                 AGENT_RUNS
                                     .iter()
-                                    .map(|(n)| (SharedString::from(*n), SharedString::from(*n)))
+                                    .map(|n| (SharedString::from(*n), SharedString::from(*n)))
                                     .collect(),
                                 |_| get().agent_runs_queries.clone().into(),
                                 |v: SharedString, cx| {

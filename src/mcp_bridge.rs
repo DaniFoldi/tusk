@@ -404,19 +404,12 @@ fn discover_all_in(dir: &Path) -> Vec<Instance> {
                 }),
         );
     }
-    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    cands.sort_by_key(|a| std::cmp::Reverse(a.0));
     cands
         .into_iter()
         .map(|(_, i)| i)
         .filter(|i| connect(&i.socket).is_ok())
         .collect()
-}
-
-/// The newest running Tusk's endpoint, for `tusk mcp` (the default when
-/// a tool call doesn't name a connection).
-pub fn discover() -> Option<(PathBuf, String)> {
-    let i = catalog().into_iter().next()?;
-    Some((i.socket, i.token))
 }
 
 /// Every live Tusk window this user is running, newest first.
