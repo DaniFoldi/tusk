@@ -767,6 +767,120 @@ impl TuskApp {
                 }
                 let _ = reply.send(Ok(s));
             }
+            "list_databases" => {
+                if !connected {
+                    let _ = reply.send(Err("No database connection is open in Tusk.".into()));
+                    return;
+                }
+                let Some((c, _)) = self.active_conn.clone() else {
+                    let _ = reply.send(Err("No database connection is open in Tusk.".into()));
+                    return;
+                };
+                if self.databases.is_empty() {
+                    let _ = reply.send(Ok(format!(
+                        "\"{}\" ({}): this engine has no separate databases.",
+                        c.name,
+                        c.engine.label()
+                    )));
+                    return;
+                }
+                let keys = matches!(
+                    c.engine,
+                    crate::engine::Engine::Redis | crate::engine::Engine::Valkey
+                );
+                let mut lines = String::new();
+                for d in &self.databases {
+                    let size = self
+                        .database_sizes
+                        .iter()
+                        .find(|(n, _)| *n == d)
+                        .map(|(_, s)| {
+                            if keys {
+                                format!(" · {}", crate::app::fmt_keys(*s))
+                            } else {
+                                format!(" · {}", crate::app::fmt_bytes(*s))
+                            }
+                        })
+                        .unwrap_or_default();
+                    let mark = if d == &c.database { " · current" } else { "" };
+                    lines.push_str(&format!("  {d}{size}{mark}\n"));
+                }
+                let _ = reply.send(Ok(format!(
+                    "Databases of \"{}\" ({}):\n{}Open one with open_database.",
+                    c.name,
+                    c.engine.label(),
+                    lines
+                )));
+            }
+            "open_database" => {
+                let Some(target) = arg("database") else {
+                    let _ = reply.send(Err(
+                        "`database` is required (list_databases shows the options).".into(),
+                    ));
+                    return;
+                };
+                if !connected {
+                    let _ = reply.send(Err("No database connection is open in Tusk.".into()));
+                    return;
+                }
+                let Some((c, _)) = self.active_conn.clone() else {
+                    let _ = reply.send(Err("No database connection is open in Tusk.".into()));
+                    return;
+                };
+                if !self.databases.contains(&target) {
+                    let _ = reply.send(Err(format!(
+                        "`{target}` is not a database of \"{}\". Available: {}",
+                        c.name,
+                        self.databases.join(", ")
+                    )));
+                    return;
+                }
+                if target == c.database {
+                    let _ = reply.send(Ok(format!("Already on `{target}`.")));
+                    return;
+                }
+                // The approval gate: a database the user has opened before
+                // (recent list) switches straight away; one new to this
+                // connection asks the user in-app, and allowing remembers it.
+                if crate::settings::recent_databases(&c.name)
+                    .iter()
+                    .any(|d| d == &target)
+                {
+                    self.switch_database(target.clone(), window, cx);
+                    let _ = reply.send(Ok(format!("Opening `{target}`…")));
+                    return;
+                }
+                let conn_name = c.name.clone();
+                let answer = crate::dialog_keys::confirm(
+                    window,
+                    PromptLevel::Info,
+                    "Open another database?",
+                    Some(&format!(
+                        "An AI agent asks to open database `{target}` on connection \"{conn_name}\".\n\n\
+                         Allowing remembers `{target}` — later agent requests switch without asking."
+                    )),
+                    "Open",
+                    cx,
+                );
+                cx.spawn(async move |weak, cx: &mut AsyncApp| {
+                    if answer.await {
+                        let ok = weak
+                            .update(cx, |this: &mut TuskApp, cx| {
+                                crate::settings::push_recent_database(cx, &conn_name, &target);
+                                this.reconnect_database(target.clone(), cx);
+                            })
+                            .is_ok();
+                        let _ = reply.send(if ok {
+                            Ok(format!("Opening `{target}`… (the user allowed it)"))
+                        } else {
+                            Err("The Tusk window closed.".into())
+                        });
+                    } else {
+                        let _ = reply.send(Err(format!("The user declined opening `{target}`.")));
+                    }
+                })
+                .detach();
+            }
             "list_tables" => {
                 let Some(pool) = self.pool.clone() else {
                     let _ = reply.send(Err("Not connected to a database.".into()));

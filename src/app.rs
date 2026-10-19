@@ -2516,6 +2516,12 @@ impl TuskApp {
     /// Database select box: reconnect with the same profile to another
     /// database (tabs belong to the old database and are closed).
     pub fn switch_database(&mut self, name: String, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reconnect_database(name, cx);
+    }
+
+    /// switch_database for callers without a Window — the MCP
+    /// open_database tool reaches it from a dialog callback.
+    pub(crate) fn reconnect_database(&mut self, name: String, cx: &mut Context<Self>) {
         let Some((conn, password)) = self.active_conn.clone() else {
             return;
         };

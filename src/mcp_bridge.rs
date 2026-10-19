@@ -101,6 +101,21 @@ pub fn tools() -> Value {
             &[]
         ),
         tool(
+            "list_databases",
+            "The databases of the active connection, with sizes (or key counts for \
+              Redis / Valkey) and which one is current.",
+            json!({}),
+            &[]
+        ),
+        tool(
+            "open_database",
+            "Switch the window to another database of its connection. Databases the \
+              user has opened before switch immediately; a database new to the \
+              connection asks the user in-app (allowing remembers it).",
+            json!({ "database": { "type": "string" } }),
+            &["database"]
+        ),
+        tool(
             "describe_table",
             "The CREATE statement of a table or view: columns, types, defaults, keys, \
               indexes, constraints.",
@@ -582,13 +597,15 @@ fn serve(resolve: impl FnMut() -> Vec<Instance> + 'static) {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "title": "Tusk", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": "Tools of Tusk, the database client the user is working in. \
-                    Several Tusk windows may be running; list_connections shows them, and the \
-                    optional `connection` argument of each tool picks one (without it, the most \
-                    recently active window answers). Inspect the database with get_context / \
-                    list_tables / describe_table. Put SQL for the user into a tab with \
-                    open_sql_tab — they review and run it. run_sql only works if the user's \
-                    settings allow it (never by default, read-only by choice); when refused, \
-                    fall back to open_sql_tab."
+                    Several Tusk windows may be running; list_connections shows them (and the \
+                    saved connections), and the optional `connection` argument of each tool \
+                    picks one (without it, the most recently active window answers). Inspect \
+                    the database with get_context / list_tables / describe_table / \
+                    list_databases; open_database switches to another database (new ones ask \
+                    the user first). Put SQL for the user into a tab with open_sql_tab — they \
+                    review and run it. run_sql only works if the user's settings allow it \
+                    (never by default, read-only by choice); when refused, fall back to \
+                    open_sql_tab."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
@@ -680,14 +697,47 @@ fn call(
     (false, "Lost the connection to Tusk.".into())
 }
 
-/// `list_connections`: one line per live window, newest first.
+/// `list_connections`: one line per live window, newest first, then the
+/// saved connections (so an agent can name targets that aren't open yet).
 fn catalog_text(instances: &[Instance]) -> String {
-    if instances.is_empty() {
-        return "No Tusk window is running — start Tusk first.".to_string();
-    }
-    let mut s = format!("{} running Tusk window(s):\n", instances.len());
-    for (i, inst) in instances.iter().enumerate() {
-        s.push_str(&format!("{}. {}\n", i + 1, inst.label()));
+    let mut s = if instances.is_empty() {
+        "No Tusk window is running — start Tusk first.\n".to_string()
+    } else {
+        let mut s = format!("{} running Tusk window(s):\n", instances.len());
+        for (i, inst) in instances.iter().enumerate() {
+            s.push_str(&format!("{}. {}\n", i + 1, inst.label()));
+        }
+        s
+    };
+    // Saved profiles: what the user can open, running or not. Names only —
+    // no credentials travel to the agent.
+    let saved = crate::db::load_connections();
+    if !saved.is_empty() {
+        let mut lines: Vec<String> = saved
+            .iter()
+            .map(|c| {
+                format!(
+                    "{} ({}{}{})",
+                    c.name,
+                    c.engine.label(),
+                    if c.host.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {}", c.host)
+                    },
+                    if c.database.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", db {}", c.database)
+                    }
+                )
+            })
+            .collect();
+        lines.sort_by_key(|l| l.to_lowercase());
+        s.push_str(&format!(
+            "\nSaved connections (open one in Tusk to use it): {}\n",
+            lines.join(" | ")
+        ));
     }
     s.push_str(
         "Pass the connection name as the `connection` argument to any tool; \
@@ -986,6 +1036,8 @@ mod tests {
             .collect();
         assert!(names.contains(&"open_sql_tab"));
         assert!(names.contains(&"list_connections"));
+        assert!(names.contains(&"list_databases"));
+        assert!(names.contains(&"open_database"));
         for tool in t.as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
             assert!(

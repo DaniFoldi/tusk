@@ -85,7 +85,9 @@ Tusk talks to agents over the [Agent Client Protocol](https://agentclientprotoco
 >
 > On macOS with the installed app, the binary is `/Applications/Tusk.app/Contents/MacOS/tusk`. `tusk mcp` finds the running Tusk on its own (the newest window first, and it follows restarts); with Tusk closed, a tool call just answers "start Tusk first".
 >
-> **Several Tusk windows at once:** every running window is served through the same server. `list_connections` shows them (connection name, database, engine); pass a `connection` to any tool to pick one — otherwise the most recently active window answers. Open more windows by launching the app again (`open -n Tusk.app`, or run the binary twice).
+> **Several Tusk windows at once:** every running window is served through the same server. `list_connections` shows them (connection name, database, engine) plus the saved connections; pass a `connection` to any tool to pick one — otherwise the most recently active window answers. Open more windows by launching the app again (`open -n Tusk.app`, or run the binary twice).
+>
+> **Databases:** `list_databases` shows the databases of the active connection with sizes; `open_database` switches the window to one. Databases you've opened before switch straight away; a database new to the connection asks you in-app, and allowing remembers it.
 >
 > The six tools read your schema (`get_context`, `list_tables`, `describe_table`) and put SQL into a tab for you to review — by default nothing runs. Want the agent to see rows too? Settings → AI → **Agents Can Run Queries**: *Read-only* lets `run_sql` execute single SELECT-type statements and return the rows as TSV; *All* runs anything. Read-only is enforced by the server where the protocol has one — Postgres and MySQL family connections run the statement inside a `READ ONLY` transaction, so even a write hidden behind a function body is refused. Everything an agent runs lands in the console and History.
 
